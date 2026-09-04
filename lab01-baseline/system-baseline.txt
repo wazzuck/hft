@@ -1,0 +1,10 @@
+===DATE===
+Fri Sep  4 03:42:13 AM BST 2026
+===USER===
+neville
+===HOST===
+penguin
+===KERNEL===
+Linux penguin 6.6.135-09383-g1140e4f27e24 #1 SMP PREEMPT_DYNAMIC Wed, 24 Jun 2026 00:34:46 -0700 x86_64 GNU/Linux
+===OS===
+PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
