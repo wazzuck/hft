@@ -27,6 +27,6 @@ sh -s -- -y --profile minimal
 
 ENV PATH="/home/developer/.cargo/bin:${PATH}"
 
-RUNU rustup default stable
+RUN rustup default stable
 
 CMD ["/bin/bash/"]
