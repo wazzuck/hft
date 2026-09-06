@@ -1,0 +1,17 @@
+{
+	"name": "C++ and Rust Toolchain",
+	"build": {
+		"dockerfile": "Dockerfile"
+		},
+	"remoteUser": "developer",
+	"workspaceFolder": "/workspace",
+	"customizations":{
+		"vscode":{
+			"extensions":[
+				"llvm-vs-code-extensions.vscode-clangd",
+				"rust-lang.rust-analyzer",
+				"ms-vscode.cmake-tools"
+			]
+		}
+	}
+}
