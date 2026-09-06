@@ -1,0 +1,157 @@
+[0;32m════════════════════════════════════════════════════════════════[0m
+[0;32m       HFT SERVER TUNING - AUTONOMOUS LATENCY OPTIMIZATION[0m
+[0;32m════════════════════════════════════════════════════════════════[0m
+
+[1;33mℹ INFO:[0m Running fully autonomous HFT tuning...
+[1;33mℹ INFO:[0m Report will be saved to: hft_latency_report_20260906_125902.txt
+[1;33mℹ INFO:[0m Log will be saved to: hft_tuning_20260906_125902.log
+
+[1;33mℹ INFO:[0m Installing required tools...
+
+[0;34m════════════════════════════════════════════════════════════[0m
+[0;34m  CAPTURING BASELINE STATE (BEFORE TUNING)[0m
+[0;34m════════════════════════════════════════════════════════════[0m
+[1;33mℹ INFO:[0m Running comprehensive latency measurements...
+[1;33mℹ INFO:[0m This will take approximately 30-60 seconds...
+
+[0;36m━━━ BEFORE STATE SUMMARY ━━━[0m
+[1mCPU Frequency:[0m 4148.061 MHz (Max: 4153.1890 MHz)
+[1mGovernor:[0m performance
+[1mThreads/Core:[0m 1
+[1mNUMA Nodes:[0m 2
+[1mFrequency Ramp:[0m 0 ms
+[1mCache Latency:[0m N/A (install lmbench)
+[1mNUMA Ops:[0m local=[15343]
+[15343] remote=[15351]
+[15351]
+[1mNetwork Latency:[0m 0.025ms
+[1mContext Switch:[0m N/A (install lmbench)
+[1mSyscall Latency:[0m N/A (install lmbench)
+
+
+[0;34m════════════════════════════════════════════════════════════[0m
+[0;34m  TUNING: CPU GOVERNOR TO PERFORMANCE[0m
+[0;34m════════════════════════════════════════════════════════════[0m
+
+[0;36m━━━ Before ━━━[0m
+[1mGovernor:[0m performance
+[1mCPU MHz:[0m 2900.000
+
+[0;36m📖 EXPLANATION:[0m
+Setting CPU governor to performance mode for zero frequency ramp latency.
+
+[0;36m━━━ After ━━━[0m
+[1mGovernor:[0m performance
+[1mCPU MHz:[0m 4149.564
+[0;32m✓ SUCCESS:[0m Governor set to performance
+
+
+[0;34m════════════════════════════════════════════════════════════[0m
+[0;34m  TUNING: NETWORK RING BUFFER TO 256[0m
+[0;34m════════════════════════════════════════════════════════════[0m
+
+[0;36m━━━ Before ━━━[0m
+[1mRX Ring:[0m 512
+[1mTX Ring:[0m 512
+
+[0;36m📖 EXPLANATION:[0m
+Reducing ring buffers to minimize packet queueing delay.
+
+[0;36m━━━ After ━━━[0m
+[1mRX Ring:[0m 256
+[1mTX Ring:[0m 256
+
+
+[0;34m════════════════════════════════════════════════════════════[0m
+[0;34m  TUNING: IRQ AFFINITY TO NUMA NODE 1[0m
+[0;34m════════════════════════════════════════════════════════════[0m
+
+[0;36m━━━ Before (first 3 queues) ━━━[0m
+  IRQ 223: CPUs: 12-23
+  IRQ 224: CPUs: 12-23
+  IRQ 225: CPUs: 12-23
+
+[0;36m📖 EXPLANATION:[0m
+Pinning network IRQs to Node 1 (CPUs 12-23) to keep Node 0 free.
+
+[0;36m━━━ After (first 3 queues) ━━━[0m
+  IRQ 223: CPUs: 12-23
+  IRQ 224: CPUs: 12-23
+  IRQ 225: CPUs: 12-23
+
+
+[0;34m════════════════════════════════════════════════════════════[0m
+[0;34m  CAPTURING FINAL STATE (AFTER TUNING)[0m
+[0;34m════════════════════════════════════════════════════════════[0m
+[1;33mℹ INFO:[0m Running final comprehensive latency measurements...
+
+[0;36m━━━ AFTER STATE SUMMARY ━━━[0m
+[1mCPU Frequency:[0m 4149.270 MHz (Max: 4153.1890 MHz)
+[1mGovernor:[0m performance
+[1mThreads/Core:[0m 1
+[1mNUMA Nodes:[0m 2
+[1mFrequency Ramp:[0m 0 ms
+[1mCache Latency:[0m N/A (install lmbench)
+[1mNUMA Ops:[0m local=[15708]
+[15708] remote=[15716]
+[15716]
+[1mNetwork Latency:[0m 0.025ms
+[1mContext Switch:[0m N/A (install lmbench)
+[1mSyscall Latency:[0m N/A (install lmbench)
+
+
+[0;34m════════════════════════════════════════════════════════════[0m
+[0;34m  GENERATING HFT TUNING REPORT[0m
+[0;34m════════════════════════════════════════════════════════════[0m
+════════════════════════════════════════════════════════════════
+           HFT SERVER TUNING REPORT
+           Sun Sep  6 12:59:19 PM UTC 2026
+════════════════════════════════════════════════════════════════
+
+Server: neville
+CPU: AMD EPYC 9254 24-Core Processor
+Kernel: 7.0.0-30-generic
+
+────────────────────────────────────────────────────────────────
+  METRIC COMPARISON: BEFORE vs AFTER
+────────────────────────────────────────────────────────────────
+
+CPU CONFIGURATION:
+  Metric                                  Before                After       Status
+  ─────────────────   ──────      ───── ──────
+  Governor                           performance          performance     SEE_DIFF
+  CPU MHz                               4148.061             4149.270     SEE_DIFF
+  Frequency Ramp (ms)                          0                    0     SEE_DIFF
+  Threads/Core                                 1                    1     SEE_DIFF
+  NUMA Nodes                                   2                    2     SEE_DIFF
+
+LATENCY METRICS:
+  Metric                                  Before                After       Status
+  ─────────────────   ──────      ───── ──────
+  Cache Latency             N/A (install lmbench) N/A (install lmbench)     SEE_DIFF
+  NUMA Ops                  local=[15343]
+[15343] remote=[15351]
+[15351] local=[15708]
+[15708] remote=[15716]
+[15716]     SEE_DIFF
+  Network Latency                        0.025ms              0.025ms     SEE_DIFF
+  Context Switch            N/A (install lmbench) N/A (install lmbench)     SEE_DIFF
+  Syscall Latency           N/A (install lmbench) N/A (install lmbench)     SEE_DIFF
+
+────────────────────────────────────────────────────────────────
+  CHANGES APPLIED
+────────────────────────────────────────────────────────────────
+
+  OK ring_buffer: RX: 512 to 256, TX: 512 to 256
+  OK irq_affinity: All eno1 IRQs pinned to CPUs 12-23
+
+════════════════════════════════════════════════════════════════
+  Report: hft_latency_report_20260906_125902.txt
+  Log: hft_tuning_20260906_125902.log
+════════════════════════════════════════════════════════════════
+[0;32m✓ SUCCESS:[0m Report saved to: hft_latency_report_20260906_125902.txt
+
+[0;32m✓ SUCCESS:[0m HFT tuning complete!
+[0;32m✓ SUCCESS:[0m Report: hft_latency_report_20260906_125902.txt
+[0;32m✓ SUCCESS:[0m Log: hft_tuning_20260906_125902.log
+

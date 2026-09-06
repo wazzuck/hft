@@ -1,0 +1,46 @@
+════════════════════════════════════════════════════════════════
+           HFT SERVER TUNING REPORT
+           Sun Sep  6 12:59:19 PM UTC 2026
+════════════════════════════════════════════════════════════════
+
+Server: neville
+CPU: AMD EPYC 9254 24-Core Processor
+Kernel: 7.0.0-30-generic
+
+────────────────────────────────────────────────────────────────
+  METRIC COMPARISON: BEFORE vs AFTER
+────────────────────────────────────────────────────────────────
+
+CPU CONFIGURATION:
+  Metric                                  Before                After       Status
+  ─────────────────   ──────      ───── ──────
+  Governor                           performance          performance     SEE_DIFF
+  CPU MHz                               4148.061             4149.270     SEE_DIFF
+  Frequency Ramp (ms)                          0                    0     SEE_DIFF
+  Threads/Core                                 1                    1     SEE_DIFF
+  NUMA Nodes                                   2                    2     SEE_DIFF
+
+LATENCY METRICS:
+  Metric                                  Before                After       Status
+  ─────────────────   ──────      ───── ──────
+  Cache Latency             N/A (install lmbench) N/A (install lmbench)     SEE_DIFF
+  NUMA Ops                  local=[15343]
+[15343] remote=[15351]
+[15351] local=[15708]
+[15708] remote=[15716]
+[15716]     SEE_DIFF
+  Network Latency                        0.025ms              0.025ms     SEE_DIFF
+  Context Switch            N/A (install lmbench) N/A (install lmbench)     SEE_DIFF
+  Syscall Latency           N/A (install lmbench) N/A (install lmbench)     SEE_DIFF
+
+────────────────────────────────────────────────────────────────
+  CHANGES APPLIED
+────────────────────────────────────────────────────────────────
+
+  OK ring_buffer: RX: 512 to 256, TX: 512 to 256
+  OK irq_affinity: All eno1 IRQs pinned to CPUs 12-23
+
+════════════════════════════════════════════════════════════════
+  Report: hft_latency_report_20260906_125902.txt
+  Log: hft_tuning_20260906_125902.log
+════════════════════════════════════════════════════════════════
