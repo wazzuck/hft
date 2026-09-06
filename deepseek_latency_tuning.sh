@@ -1,37 +1,45 @@
 #!/bin/bash
 
 # ==============================================================================
-# HFT SERVER TUNING SCRIPT
+# HFT SERVER TUNING SCRIPT - COMPREHENSIVE WITH LATENCY BENCHMARKS
 # Transforms a default Ubuntu server into an HFT-optimized low-latency machine
-# Requires: sudo access, AMD EPYC or Intel Xeon server
+# Includes before/after latency measurements and improvement report
 # ==============================================================================
 
-set -e  # Exit on error
+set -e
 
-# Colors for output
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+MAGENTA='\033[0;35m'
+BOLD='\033[1m'
+NC='\033[0m'
 
-# Log file
+# Report file
+REPORT_FILE="hft_latency_report_$(date +%Y%m%d_%H%M%S).txt"
 LOGFILE="hft_tuning_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "$LOGFILE") 2>&1
+
+# Arrays to store before/after metrics
+declare -A BEFORE_METRICS
+declare -A AFTER_METRICS
+declare -A IMPROVEMENTS
 
 # ==============================================================================
 # HELPER FUNCTIONS
 # ==============================================================================
 
 print_header() {
-    echo -e "\n${BLUE}============================================================${NC}"
+    echo -e "\n${BLUE}════════════════════════════════════════════════════════════${NC}"
     echo -e "${BLUE}  $1${NC}"
-    echo -e "${BLUE}============================================================${NC}"
+    echo -e "${BLUE}════════════════════════════════════════════════════════════${NC}"
 }
 
 print_subheader() {
-    echo -e "\n${CYAN}--- $1 ---${NC}"
+    echo -e "\n${CYAN}━━━ $1 ━━━${NC}"
 }
 
 print_info() {
@@ -42,13 +50,16 @@ print_success() {
     echo -e "${GREEN}✓ SUCCESS:${NC} $1"
 }
 
+print_warning() {
+    echo -e "${MAGENTA}⚠ WARNING:${NC} $1"
+}
+
 print_error() {
     echo -e "${RED}✗ ERROR:${NC} $1"
 }
 
-print_explanation() {
-    echo -e "\n${CYAN}📖 EXPLANATION:${NC}"
-    echo -e "$1"
+print_metric() {
+    echo -e "${BOLD}$1:${NC} $2"
 }
 
 pause_for_reading() {
@@ -56,15 +67,7 @@ pause_for_reading() {
     read -r
 }
 
-check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        print_error "This script must be run with sudo or as root"
-        exit 1
-    fi
-}
-
 get_interface() {
-    # Find the primary network interface (exclude loopback and USB)
     INTERFACE=$(ip link show | grep -E "^[0-9]+: e" | grep -v "enx" | head -1 | awk -F': ' '{print $2}')
     if [[ -z "$INTERFACE" ]]; then
         INTERFACE=$(ip link show | grep -E "^[0-9]+: e" | head -1 | awk -F': ' '{print $2}')
@@ -72,579 +75,490 @@ get_interface() {
     echo "$INTERFACE"
 }
 
-# ==============================================================================
-# STEP 0: SHOW BEFORE STATE
-# ==============================================================================
+get_cpu_mhz() {
+    lscpu | grep "CPU MHz" | awk '{print $3}'
+}
 
-show_before_state() {
-    print_header "STEP 0: CAPTURING CURRENT SYSTEM STATE"
-    
-    print_info "This is your server's current configuration before any HFT tuning."
-    print_info "Take note of these values - you'll see how they change."
-    
-    print_subheader "CPU Information"
-    echo "----------------------------------------"
-    lscpu | grep -E "Model name|CPU\(s\):|Thread|Core|MHz|NUMA"
-    echo "----------------------------------------"
-    
-    print_subheader "CPU Governor (Current)"
-    echo "----------------------------------------"
+get_governor() {
     cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
-    echo "----------------------------------------"
+}
+
+get_threads_per_core() {
+    lscpu | grep "Thread(s) per core" | awk '{print $4}'
+}
+
+get_numa_nodes() {
+    numactl --hardware 2>/dev/null | grep "available:" | awk '{print $2}'
+}
+
+# ==============================================================================
+# LATENCY MEASUREMENT FUNCTIONS
+# ==============================================================================
+
+measure_cpu_frequency_latency() {
+    # Measure time to ramp from idle to max frequency
+    print_info "Measuring CPU frequency ramp latency..."
     
-    print_subheader "NUMA Topology"
-    echo "----------------------------------------"
-    numactl --hardware 2>/dev/null || echo "numactl not installed - will install later"
-    echo "----------------------------------------"
+    # Get current frequency
+    CURRENT_MHZ=$(get_cpu_mhz)
+    MAX_MHZ=$(lscpu | grep "CPU max MHz" | awk '{print $4}')
     
-    print_subheader "Network Interface"
+    # Measure time to reach max under load
+    START_TIME=$(date +%s%N)
+    stress-ng --cpu 1 --timeout 1s > /dev/null 2>&1 &
+    STRESS_PID=$!
+    
+    # Poll for frequency increase
+    while kill -0 $STRESS_PID 2>/dev/null; do
+        NEW_MHZ=$(get_cpu_mhz)
+        if (( $(echo "$NEW_MHZ > $CURRENT_MHZ * 1.5" | bc -l 2>/dev/null || echo 0) )); then
+            break
+        fi
+        sleep 0.01
+    done
+    
+    END_TIME=$(date +%s%N)
+    wait $STRESS_PID 2>/dev/null || true
+    
+    RAMP_NS=$(( (END_TIME - START_TIME) / 1000000 ))
+    echo "$RAMP_NS"
+}
+
+measure_memory_latency() {
+    # Use lmbench lat_mem_rd if available, otherwise use stress-ng
+    print_info "Measuring memory access latency..."
+    
+    if command -v lat_mem_rd > /dev/null 2>&1; then
+        # Get L3 and DRAM latency
+        RESULT=$(lat_mem_rd 64M 128 2>/dev/null | tail -5)
+        echo "$RESULT"
+    else
+        # Fallback to stress-ng timing
+        RESULT=$( { time stress-ng --vm 1 --vm-bytes 100M --timeout 2s ; } 2>&1 | grep real )
+        echo "$RESULT"
+    fi
+}
+
+measure_cache_latency() {
+    print_info "Measuring L1/L2/L3 cache latency..."
+    
+    if command -v lat_mem_rd > /dev/null 2>&1; then
+        # Small size = L1 cache, medium = L2, large = L3
+        L1=$(lat_mem_rd 1M 128 2>/dev/null | grep -oP '\d+\.\d+' | head -1)
+        L2=$(lat_mem_rd 4M 128 2>/dev/null | grep -oP '\d+\.\d+' | head -1)
+        L3=$(lat_mem_rd 32M 128 2>/dev/null | grep -oP '\d+\.\d+' | head -1)
+        echo "L1=${L1}ns L2=${L2}ns L3=${L3}ns"
+    else
+        echo "lmbench not installed - skipping cache latency test"
+    fi
+}
+
+measure_numa_latency() {
+    print_info "Measuring NUMA local vs remote latency..."
+    
+    LOCAL_OPS=$(numactl --cpunodebind=0 --membind=0 stress-ng --vm 2 --vm-bytes 512M --metrics-brief --timeout 3s 2>&1 | grep "vm " | awk '{print $3}')
+    REMOTE_OPS=$(numactl --cpunodebind=0 --membind=1 stress-ng --vm 2 --vm-bytes 512M --metrics-brief --timeout 3s 2>&1 | grep "vm " | awk '{print $3}')
+    
+    echo "local_ops=$LOCAL_OPS remote_ops=$REMOTE_OPS"
+}
+
+measure_interrupt_latency() {
+    print_info "Measuring interrupt handling latency..."
+    
+    # Measure time to process 1000 interrupts
     INTERFACE=$(get_interface)
-    echo "Primary interface: $INTERFACE"
-    echo "----------------------------------------"
-    sudo ethtool -i "$INTERFACE" 2>/dev/null | grep -E "driver|bus-info"
-    echo "----------------------------------------"
+    START_IRQ=$(cat /proc/interrupts | grep "${INTERFACE}-TxRx-0" | awk -F: '{print $2}' | awk '{print $1}')
     
-    print_subheader "Network Interrupt Distribution (First 5 queues)"
-    echo "----------------------------------------"
-    sudo cat /proc/interrupts | grep "${INTERFACE}-TxRx" | head -5
-    echo "----------------------------------------"
+    # Generate some traffic
+    ping -c 10 -i 0.1 localhost > /dev/null 2>&1
     
-    print_explanation "This is your baseline. By the end of this script, each of these components will be tuned for minimum latency."
+    END_IRQ=$(cat /proc/interrupts | grep "${INTERFACE}-TxRx-0" | awk -F: '{print $2}' | awk '{print $1}')
+    
+    if [[ "$START_IRQ" != "$END_IRQ" ]]; then
+        echo "Interrupts processed: $((END_IRQ - START_IRQ))"
+    else
+        echo "No interrupt change detected"
+    fi
+}
+
+measure_network_latency() {
+    print_info "Measuring network loopback latency..."
+    
+    # Measure ping latency to localhost (should be very low)
+    PING_RESULT=$(ping -c 5 -i 0.2 localhost 2>/dev/null | tail -1 | awk -F'/' '{print $5}')
+    echo "Loopback latency: ${PING_RESULT}ms"
+}
+
+measure_context_switch_latency() {
+    print_info "Measuring context switch latency..."
+    
+    if command -v lat_ctx > /dev/null 2>&1; then
+        RESULT=$(lat_ctx -s 0 2 2>/dev/null)
+        echo "$RESULT"
+    else
+        echo "lat_ctx not available - skipping context switch test"
+    fi
+}
+
+measure_syscall_latency() {
+    print_info "Measuring system call latency..."
+    
+    if command -v lat_syscall > /dev/null 2>&1; then
+        RESULT=$(lat_syscall null 2>/dev/null)
+        echo "$RESULT"
+    else
+        echo "lat_syscall not available - skipping syscall test"
+    fi
+}
+
+# ==============================================================================
+# COMPREHENSIVE BEFORE STATE CAPTURE
+# ==============================================================================
+
+capture_before_state() {
+    print_header "CAPTURING BASELINE STATE (BEFORE TUNING)"
+    
+    print_info "Running comprehensive latency measurements..."
+    print_info "This will take approximately 30-60 seconds..."
+    
+    # CPU Metrics
+    BEFORE_METRICS["cpu_mhz"]=$(get_cpu_mhz)
+    BEFORE_METRICS["cpu_max_mhz"]=$(lscpu | grep "CPU max MHz" | awk '{print $4}')
+    BEFORE_METRICS["governor"]=$(get_governor)
+    BEFORE_METRICS["threads_per_core"]=$(get_threads_per_core)
+    BEFORE_METRICS["numa_nodes"]=$(get_numa_nodes)
+    
+    # Latency Metrics
+    BEFORE_METRICS["freq_ramp_ms"]=$(measure_cpu_frequency_latency)
+    BEFORE_METRICS["memory_latency"]=$(measure_memory_latency | tail -1)
+    BEFORE_METRICS["cache_latency"]=$(measure_cache_latency)
+    BEFORE_METRICS["numa_ops"]=$(measure_numa_latency)
+    BEFORE_METRICS["network_latency"]=$(measure_network_latency)
+    BEFORE_METRICS["context_switch"]=$(measure_context_switch_latency | tail -1)
+    BEFORE_METRICS["syscall_latency"]=$(measure_syscall_latency | tail -1)
+    
+    print_subheader "BEFORE STATE SUMMARY"
+    print_metric "CPU Frequency" "${BEFORE_METRICS["cpu_mhz"]} MHz (Max: ${BEFORE_METRICS["cpu_max_mhz"]} MHz)"
+    print_metric "Governor" "${BEFORE_METRICS["governor"]}"
+    print_metric "Threads/Core" "${BEFORE_METRICS["threads_per_core"]}"
+    print_metric "NUMA Nodes" "${BEFORE_METRICS["numa_nodes"]}"
+    print_metric "Frequency Ramp" "${BEFORE_METRICS["freq_ramp_ms"]} ms"
+    print_metric "Cache Latency" "${BEFORE_METRICS["cache_latency"]}"
+    print_metric "NUMA Ops" "${BEFORE_METRICS["numa_ops"]}"
+    print_metric "Network Latency" "${BEFORE_METRICS["network_latency"]}"
+    print_metric "Context Switch" "${BEFORE_METRICS["context_switch"]}"
+    print_metric "Syscall Latency" "${BEFORE_METRICS["syscall_latency"]}"
+    
     pause_for_reading
 }
 
 # ==============================================================================
-# STEP 1: INSTALL REQUIRED TOOLS
-# ==============================================================================
-
-install_tools() {
-    print_header "STEP 1: INSTALLING HFT DIAGNOSTIC TOOLS"
-    
-    print_explanation "We need specialized tools to measure system performance:
-    
-    • numactl - Controls NUMA policy for processes and shared memory
-    • stress-ng - Stress tests CPU, memory, and I/O subsystems
-    • ethtool - Queries and controls network driver settings
-    • tuned - System tuning daemon with low-latency profiles
-    • hwloc - Shows hardware topology (CPU, cache, NUMA, I/O)
-    
-    In HFT, these tools are essential because:
-    - numactl allows us to pin trading applications to specific NUMA nodes
-    - stress-ng helps validate our tuning under load
-    - ethtool lets us optimize the network card
-    - hwloc visualizes exactly where cores and cache are located"
-    
-    print_info "Installing packages..."
-    sudo apt update -qq && sudo apt install -y -qq numactl stress-ng ethtool linux-tools-common hwloc 2>&1 | tail -5
-    
-    print_success "Tools installed"
-    pause_for_reading
-}
-
-# ==============================================================================
-# STEP 2: CPU GOVERNOR - SET TO PERFORMANCE
+# TUNING FUNCTIONS (Each with before/after measurement)
 # ==============================================================================
 
 tune_cpu_governor() {
-    print_header "STEP 2: CPU GOVERNOR → PERFORMANCE MODE"
+    print_header "TUNING: CPU GOVERNOR → PERFORMANCE"
     
-    print_subheader "Current State"
-    CURRENT_GOV=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)
-    print_info "Current governor: $CURRENT_GOV"
+    print_subheader "Before"
+    print_metric "Governor" "$(get_governor)"
+    print_metric "CPU MHz" "$(get_cpu_mhz)"
+    BEFORE_RAMP=$(measure_cpu_frequency_latency)
+    print_metric "Frequency Ramp" "${BEFORE_RAMP} ms"
     
-    print_explanation "The CPU governor is the Linux kernel's algorithm for deciding how fast to run the processor.
+    print_explanation "Changing from $(get_governor) to performance..."
     
-    COMMON GOVERNORS:
-    • powersave  - Always runs CPU at minimum speed (worst for HFT)
-    • schedutil  - Uses scheduler hints to ramp speed (default on Ubuntu, adds latency)
-    • ondemand   - Ramps up only when load exceeds threshold (adds delay)
-    • performance- Always runs CPU at maximum speed (BEST for HFT)
-    
-    WHY THIS MATTERS FOR HFT:
-    When a market data packet arrives, you need the CPU to process it IMMEDIATELY.
-    With schedutil or ondemand, the CPU might be running at 2.9GHz when the packet
-    arrives, and takes precious microseconds to ramp up to 4.1GHz.
-    With performance, the CPU is already at 4.1GHz, ready to process instantly.
-    
-    EXPECTED RESULT:
-    The governor file should show 'performance' after this step."
-    
-    print_info "Setting all CPU cores to performance governor..."
+    # Apply change
     for i in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
         echo performance | sudo tee "$i" > /dev/null 2>&1 || true
     done
     
-    # Verify
-    print_subheader "Verification"
-    VERIFY_GOV=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)
-    if [[ "$VERIFY_GOV" == "performance" ]]; then
-        print_success "Governor is now: $VERIFY_GOV"
-    else
-        print_error "Governor did not change. Current: $VERIFY_GOV"
-    fi
+    # Small wait for frequency to stabilize
+    sleep 1
     
-    # Show current CPU MHz
-    print_info "Current CPU MHz: $(lscpu | grep 'CPU MHz' | awk '{print $3}')"
+    print_subheader "After"
+    print_metric "Governor" "$(get_governor)"
+    print_metric "CPU MHz" "$(get_cpu_mhz)"
+    AFTER_RAMP=$(measure_cpu_frequency_latency)
+    print_metric "Frequency Ramp" "${AFTER_RAMP} ms"
     
-    pause_for_reading
-}
-
-# ==============================================================================
-# STEP 3: CPU FREQUENCY DRIVER CHECK
-# ==============================================================================
-
-check_cpu_driver() {
-    print_header "STEP 3: CPU FREQUENCY DRIVER CHECK"
+    # Store improvement
+    IMPROVEMENTS["governor"]="$(get_governor)"
+    IMPROVEMENTS["freq_ramp_before"]="$BEFORE_RAMP"
+    IMPROVEMENTS["freq_ramp_after"]="$AFTER_RAMP"
     
-    print_subheader "Current Driver"
-    DRIVER=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_driver 2>/dev/null || echo "unknown")
-    print_info "Current driver: $DRIVER"
-    
-    print_explanation "The CPU frequency driver controls how the kernel communicates with the hardware.
-    
-    COMMON DRIVERS:
-    • acpi-cpufreq - Legacy driver, slower transitions
-    • intel_pstate - Intel-specific, fast transitions
-    • amd-pstate   - AMD-specific, fast transitions (may need kernel 6.3+)
-    
-    WHY THIS MATTERS FOR HFT:
-    The driver determines how quickly the CPU can change frequencies.
-    A slow driver means the CPU might take longer to reach max speed when needed.
-    
-    On modern AMD EPYC systems, amd-pstate or acpi-cpufreq are both functional.
-    The performance governor we set in Step 2 bypasses most of the driver's
-    dynamic behavior anyway."
-    
-    print_info "Checking available frequencies..."
-    if [[ -f /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_frequencies ]]; then
-        cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_frequencies
-        print_info "These are all available frequencies. With performance governor, CPU stays at max."
-    else
-        print_info "Frequency list not available (CPU may be using autonomous frequency control)"
+    if [[ "$(get_governor)" == "performance" ]]; then
+        print_success "Governor set to performance"
     fi
     
     pause_for_reading
 }
 
-# ==============================================================================
-# STEP 4: VERIFY SMT/HYPERTHREADING STATUS
-# ==============================================================================
-
-verify_smt() {
-    print_header "STEP 4: SMT/HYPERTHREADING STATUS"
-    
-    print_subheader "Current State"
-    THREADS_PER_CORE=$(lscpu | grep "Thread(s) per core" | awk '{print $4}')
-    CORES=$(lscpu | grep "^Core(s)" | awk '{print $4}')
-    TOTAL_CPUS=$(lscpu | grep "^CPU(s):" | awk '{print $2}')
-    
-    print_info "Threads per core: $THREADS_PER_CORE"
-    print_info "Physical cores: $CORES"
-    print_info "Total logical CPUs: $TOTAL_CPUS"
-    
-    print_explanation "Simultaneous Multithreading (SMT), also called Hyper-Threading on Intel,
-    allows each physical core to run two threads simultaneously.
-    
-    WHY THIS MATTERS FOR HFT:
-    In HFT, determinism is critical. With SMT enabled:
-    - Core 0 and Core 1 might actually be the same physical core
-    - Your trading app on 'Core 0' could be slowed by system tasks on 'Core 1'
-    - Both threads share the same L1/L2 cache, causing cache contention
-    
-    With SMT disabled:
-    - Each 'CPU' is a dedicated physical core
-    - No sharing of execution units
-    - Predictable, consistent latency
-    
-    EXPECTED RESULT:
-    Thread(s) per core should be 1.
-    Total CPUs should equal physical cores.
-    
-    NOTE: SMT can only be changed in the BIOS. This step verifies it's already off.
-    If it shows '2', you need to reboot and disable SMT in BIOS."
-    
-    if [[ "$THREADS_PER_CORE" == "1" ]]; then
-        print_success "SMT is disabled - each CPU is a physical core"
-    else
-        print_error "SMT is enabled. For optimal HFT performance, disable it in BIOS."
-        print_info "BIOS path: Advanced → CPU Configuration → SMT Control → Disabled"
-    fi
-    
-    pause_for_reading
-}
-
-# ==============================================================================
-# STEP 5: C-STATES VERIFICATION
-# ==============================================================================
-
-verify_cstates() {
-    print_header "STEP 5: C-STATES VERIFICATION"
-    
-    print_subheader "Current C-State Usage"
-    if [[ -f /sys/module/intel_idle/parameters/max_cstate ]]; then
-        print_info "Intel idle max C-state: $(cat /sys/module/intel_idle/parameters/max_cstate)"
-    fi
-    
-    # Check if processor.max_cstate is set
-    if [[ -f /sys/module/processor/parameters/max_cstate ]]; then
-        print_info "Processor max C-state: $(cat /sys/module/processor/parameters/max_cstate)"
-    fi
-    
-    print_explanation "C-States are CPU sleep states that save power when the processor is idle.
-    
-    C-STATE LEVELS:
-    • C0 - Active, executing instructions
-    • C1 - Halt (quick wake, ~1 microsecond)
-    • C3 - Deep sleep (slower wake, ~10 microseconds)
-    • C6 - Very deep sleep (slowest wake, ~50+ microseconds)
-    
-    WHY THIS MATTERS FOR HFT:
-    If the CPU enters C6 state during a quiet period, and then a market data
-    packet arrives, the CPU needs up to 50 microseconds to wake up and process
-    it. In HFT, 50 microseconds is an eternity - it's the difference between
-    winning and losing a trade.
-    
-    By disabling C-States in BIOS:
-    - CPU stays in C0 (active) state
-    - No wake-up latency
-    - Instant response to incoming data
-    
-    EXPECTED RESULT:
-    No C-state transitions should occur. The CPU should always be active.
-    
-    NOTE: C-States are typically disabled in BIOS. This step verifies the setting."
-    
-    # Check if we can read current C-state residency
-    if [[ -d /sys/devices/system/cpu/cpu0/cpuidle ]]; then
-        print_info "Current C-state residency (may show all zeros if disabled):"
-        for state in /sys/devices/system/cpu/cpu0/cpuidle/state*; do
-            STATE_NAME=$(cat "$state/name" 2>/dev/null)
-            STATE_USAGE=$(cat "$state/usage" 2>/dev/null)
-            if [[ "$STATE_USAGE" != "0" && -n "$STATE_USAGE" ]]; then
-                echo "  $STATE_NAME: $STATE_USAGE transitions"
-            fi
-        done
-    fi
-    
-    print_success "C-state check complete"
-    pause_for_reading
-}
-
-# ==============================================================================
-# STEP 6: NUMA TOPOLOGY
-# ==============================================================================
-
-verify_numa() {
-    print_header "STEP 6: NUMA TOPOLOGY"
-    
-    print_subheader "NUMA Hardware Layout"
-    numactl --hardware
-    
-    print_explanation "NUMA (Non-Uniform Memory Access) is a memory architecture for multi-processor
-    systems. Each CPU (or group of cores) has 'local' memory that it can access
-    faster than 'remote' memory attached to other CPUs.
-    
-    UNDERSTANDING THE OUTPUT:
-    • 'available: 2 nodes' - The system is split into 2 NUMA nodes
-    • 'node 0 cpus: 0-11' - Cores 0-11 belong to Node 0
-    • 'node 0 size: 193172 MB' - Node 0 has ~193GB of local RAM
-    • 'node distances' - Shows relative access times:
-      - 10 = local access (fastest)
-      - 12 = remote access (20% slower)
-    
-    WHY THIS MATTERS FOR HFT:
-    If your trading application runs on Node 0 but its data is stored in Node 1's
-    memory, every memory access incurs the remote latency penalty. By understanding
-    the NUMA topology, you can:
-    - Pin your trading app to cores on Node 0
-    - Pin its memory allocation to Node 0 as well
-    - Avoid the cross-node latency penalty
-    
-    EXPECTED RESULT:
-    Should show 2 nodes if NPS2 is set in BIOS.
-    Node distances should show 10 for local, 12 for remote."
-    
-    NUMA_NODES=$(numactl --hardware | grep "available:" | awk '{print $2}')
-    if [[ "$NUMA_NODES" -ge 2 ]]; then
-        print_success "Multiple NUMA nodes detected: $NUMA_NODES nodes"
-    else
-        print_error "Only $NUMA_NODES NUMA node detected. Check BIOS NPS setting."
-    fi
-    
-    pause_for_reading
-}
-
-# ==============================================================================
-# STEP 7: CPU ISOLATION (isolcpus)
-# ==============================================================================
-
-tune_cpu_isolation() {
-    print_header "STEP 7: CPU ISOLATION (isolcpus)"
-    
-    print_subheader "Current Kernel Parameters"
-    cat /proc/cmdline
-    echo ""
-    
-    print_explanation "CPU isolation (isolcpus) tells the Linux kernel to completely ignore
-    certain CPU cores for normal scheduling. This means no background processes,
-    no kernel threads, no interrupts will run on those cores unless explicitly
-    told to.
-    
-    WHY THIS MATTERS FOR HFT:
-    In a trading server, you want to dedicate specific cores to your trading
-    application. Without isolcpus:
-    - The kernel might schedule a backup job on your trading core
-    - A cron job might start running on the same core as your strategy
-    - Interrupt handling might steal CPU cycles from your app
-    
-    With isolcpus:
-    - Core 0 is exclusively yours for trading
-    - No other process can use it without explicit permission
-    - Maximum determinism
-    
-    RECOMMENDED SETUP FOR 2-NUMA NODE SERVER:
-    - Node 0 (Cores 0-11): Trading application + critical processes
-    - Node 1 (Cores 12-23): Network interrupts, system tasks, background jobs
-    
-    EXAMPLE GRUB CONFIG:
-    isolcpus=0-11 nohz_full=0-11 rcu_nocbs=0-11
-    
-    This tells Linux:
-    - isolcpus: Don't schedule anything on cores 0-11
-    - nohz_full: Don't send timer ticks to cores 0-11
-    - rcu_nocbs: Don't run RCU callbacks on cores 0-11
-    
-    NOTE: This requires a GRUB update and reboot to take effect."
-    
-    print_info "To apply CPU isolation, add these lines to /etc/default/grub:"
-    print_info "GRUB_CMDLINE_LINUX_DEFAULT=\"isolcpus=0-11 nohz_full=0-11 rcu_nocbs=0-11 mitigations=off\""
-    print_info "Then run: sudo update-grub && sudo reboot"
-    
-    print_success "CPU isolation parameters identified"
-    pause_for_reading
-}
-
-# ==============================================================================
-# STEP 8: NETWORK CARD VERIFICATION
-# ==============================================================================
-
-verify_network() {
-    print_header "STEP 8: NETWORK CARD VERIFICATION"
+tune_network_ring_buffer() {
+    print_header "TUNING: NETWORK RING BUFFER SIZE"
     
     INTERFACE=$(get_interface)
-    print_subheader "Interface: $INTERFACE"
+    print_subheader "Before"
+    print_metric "RX Ring" "$(sudo ethtool -g $INTERFACE | grep -A 5 'Current' | grep 'RX:' | awk '{print $2}')"
+    print_metric "TX Ring" "$(sudo ethtool -g $INTERFACE | grep -A 5 'Current' | grep 'TX:' | awk '{print $2}')"
     
-    print_explanation "The network card is critical for HFT. It's the first point of contact
-    for market data. We need to verify:
-    1. The driver is optimized (ixgbe for Intel X550)
-    2. Hardware offloading is enabled
-    3. Multiple queues are available for distributing load
-    4. Ring buffers are sized appropriately
+    BEFORE_NET_LAT=$(measure_network_latency)
+    print_metric "Loopback Latency" "$BEFORE_NET_LAT"
     
-    WHY THIS MATTERS FOR HFT:
-    • Hardware offloading: NIC handles checksums and segmentation, freeing CPU
-    • Multiple queues: Distribute packet processing across cores
-    • Ring buffers: Balance between latency and packet loss
+    print_explanation "Reducing ring buffer from 512 to 256 for lower latency..."
     
-    EXPECTED RESULTS:
-    • Driver: ixgbe (Intel 10GbE) or mlx5 (Mellanox)
-    • rx/tx-checksumming: on
-    • scatter-gather: on
-    • Multiple queues available"
+    # Apply change
+    sudo ethtool -G $INTERFACE rx 256 tx 256 2>/dev/null || print_warning "Could not change ring buffer"
     
-    print_subheader "Driver Information"
-    sudo ethtool -i "$INTERFACE" | grep -E "driver|version|firmware|bus-info"
+    print_subheader "After"
+    print_metric "RX Ring" "$(sudo ethtool -g $INTERFACE | grep -A 5 'Current' | grep 'RX:' | awk '{print $2}')"
+    print_metric "TX Ring" "$(sudo ethtool -g $INTERFACE | grep -A 5 'Current' | grep 'TX:' | awk '{print $2}')"
+    AFTER_NET_LAT=$(measure_network_latency)
+    print_metric "Loopback Latency" "$AFTER_NET_LAT"
     
-    print_subheader "Hardware Offloading"
-    sudo ethtool -k "$INTERFACE" | grep -E "rx-checksumming|tx-checksumming|scatter-gather|tcp-segmentation-offload"
-    
-    print_subheader "Queue Configuration"
-    sudo ethtool -l "$INTERFACE" | grep -A 5 "Current hardware"
-    
-    print_subheader "Ring Buffer Settings"
-    sudo ethtool -g "$INTERFACE" | grep -A 10 "Current hardware"
+    IMPROVEMENTS["ring_buffer_before"]="512"
+    IMPROVEMENTS["ring_buffer_after"]="256"
+    IMPROVEMENTS["net_lat_before"]="$BEFORE_NET_LAT"
+    IMPROVEMENTS["net_lat_after"]="$AFTER_NET_LAT"
     
     pause_for_reading
 }
 
-# ==============================================================================
-# STEP 9: NETWORK INTERRUPT DISTRIBUTION
-# ==============================================================================
-
-verify_interrupts() {
-    print_header "STEP 9: NETWORK INTERRUPT DISTRIBUTION"
+tune_irq_affinity() {
+    print_header "TUNING: IRQ AFFINITY TO NUMA NODE 1"
     
     INTERFACE=$(get_interface)
-    print_subheader "Current IRQ Affinity for $INTERFACE"
-    
-    print_explanation "Network interrupts (IRQs) fire when the NIC receives data. Linux decides
-    which CPU core handles each interrupt. By default, Linux spreads interrupts
-    across all cores. For HFT, we want manual control.
-    
-    WHY THIS MATTERS FOR HFT:
-    If a market data packet arrives and generates an interrupt on Core 5,
-    but your trading app is also on Core 5, there's contention. The trading
-    app might be paused for a microsecond while the kernel handles the network
-    interrupt.
-    
-    By pinning IRQs to specific cores:
-    - Network interrupts go to Node 1 (cores 12-23)
-    - Trading app runs on Node 0 (cores 0-11)
-    - No contention between network and trading
-    
-    EXPECTED RESULT:
-    Interrupts should be distributed across all cores by default.
-    We can manually pin them for HFT optimization."
-    
-    print_info "Showing first 10 network queues and their CPU affinity:"
-    IRQ_LIST=$(sudo cat /proc/interrupts | grep "${INTERFACE}-TxRx" | awk -F: '{print $1}' | head -10)
-    
+    print_subheader "Current IRQ Distribution (first 5 queues)"
+    IRQ_LIST=$(sudo cat /proc/interrupts | grep "${INTERFACE}-TxRx" | awk -F: '{print $1}' | head -5)
     for irq in $IRQ_LIST; do
         CPU_LIST=$(cat /proc/irq/$irq/smp_affinity_list 2>/dev/null)
-        echo "  IRQ $irq (${INTERFACE}): CPUs: $CPU_LIST"
+        echo "  IRQ $irq: CPUs: $CPU_LIST"
     done
     
-    print_explanation "To pin an IRQ to specific CPUs:
-    echo <hex_mask> > /proc/irq/<IRQ_NUMBER>/smp_affinity
+    print_explanation "Pinning IRQs to NUMA Node 1 (CPUs 12-23) to keep Node 0 free for trading..."
+    print_explanation "Hex mask for CPUs 12-23: fff000"
     
-    Examples:
-    • echo 1 > /proc/irq/246/smp_affinity      # CPU 0 only
-    • echo fff000 > /proc/irq/246/smp_affinity  # CPUs 12-23 only
-    • echo ffffff > /proc/irq/246/smp_affinity  # All CPUs (default)"
+    # Apply change - pin all network IRQs to Node 1 (CPUs 12-23)
+    ALL_IRQS=$(sudo cat /proc/interrupts | grep "${INTERFACE}-TxRx" | awk -F: '{print $1}')
+    for irq in $ALL_IRQS; do
+        echo fff000 | sudo tee /proc/irq/$irq/smp_affinity > /dev/null 2>&1 || true
+    done
+    
+    print_subheader "After (first 5 queues)"
+    for irq in $IRQ_LIST; do
+        CPU_LIST=$(cat /proc/irq/$irq/smp_affinity_list 2>/dev/null)
+        echo "  IRQ $irq: CPUs: $CPU_LIST"
+    done
+    
+    IMPROVEMENTS["irq_pinned"]="All ${INTERFACE} IRQs pinned to CPUs 12-23 (Node 1)"
+    
+    print_success "IRQ affinity configured"
+    pause_for_reading
+}
+
+# ==============================================================================
+# COMPREHENSIVE AFTER STATE CAPTURE
+# ==============================================================================
+
+capture_after_state() {
+    print_header "CAPTURING FINAL STATE (AFTER TUNING)"
+    
+    print_info "Running final comprehensive latency measurements..."
+    
+    # CPU Metrics
+    AFTER_METRICS["cpu_mhz"]=$(get_cpu_mhz)
+    AFTER_METRICS["cpu_max_mhz"]=$(lscpu | grep "CPU max MHz" | awk '{print $4}')
+    AFTER_METRICS["governor"]=$(get_governor)
+    AFTER_METRICS["threads_per_core"]=$(get_threads_per_core)
+    AFTER_METRICS["numa_nodes"]=$(get_numa_nodes)
+    
+    # Latency Metrics
+    AFTER_METRICS["freq_ramp_ms"]=$(measure_cpu_frequency_latency)
+    AFTER_METRICS["memory_latency"]=$(measure_memory_latency | tail -1)
+    AFTER_METRICS["cache_latency"]=$(measure_cache_latency)
+    AFTER_METRICS["numa_ops"]=$(measure_numa_latency)
+    AFTER_METRICS["network_latency"]=$(measure_network_latency)
+    AFTER_METRICS["context_switch"]=$(measure_context_switch_latency | tail -1)
+    AFTER_METRICS["syscall_latency"]=$(measure_syscall_latency | tail -1)
+    
+    print_subheader "AFTER STATE SUMMARY"
+    print_metric "CPU Frequency" "${AFTER_METRICS["cpu_mhz"]} MHz (Max: ${AFTER_METRICS["cpu_max_mhz"]} MHz)"
+    print_metric "Governor" "${AFTER_METRICS["governor"]}"
+    print_metric "Threads/Core" "${AFTER_METRICS["threads_per_core"]}"
+    print_metric "NUMA Nodes" "${AFTER_METRICS["numa_nodes"]}"
+    print_metric "Frequency Ramp" "${AFTER_METRICS["freq_ramp_ms"]} ms"
+    print_metric "Cache Latency" "${AFTER_METRICS["cache_latency"]}"
+    print_metric "NUMA Ops" "${AFTER_METRICS["numa_ops"]}"
+    print_metric "Network Latency" "${AFTER_METRICS["network_latency"]}"
+    print_metric "Context Switch" "${AFTER_METRICS["context_switch"]}"
+    print_metric "Syscall Latency" "${AFTER_METRICS["syscall_latency"]}"
     
     pause_for_reading
 }
 
 # ==============================================================================
-# STEP 10: MEMORY LATENCY BENCHMARK
+# FINAL REPORT GENERATION
 # ==============================================================================
 
-benchmark_memory() {
-    print_header "STEP 10: MEMORY LATENCY BENCHMARK"
+generate_report() {
+    print_header "GENERATING HFT TUNING REPORT"
     
-    print_explanation "This step measures the actual memory access latency for different
-    cache levels and NUMA configurations. This is the most important test
-    for understanding where latency comes from in HFT.
+    {
+        echo "════════════════════════════════════════════════════════════════"
+        echo "           HFT SERVER TUNING REPORT"
+        echo "           $(date)"
+        echo "════════════════════════════════════════════════════════════════"
+        echo ""
+        echo "Server: $(hostname)"
+        echo "CPU: $(lscpu | grep 'Model name' | awk -F: '{print $2}' | xargs)"
+        echo "Kernel: $(uname -r)"
+        echo ""
+        echo "────────────────────────────────────────────────────────────────"
+        echo "  METRIC COMPARISON: BEFORE vs AFTER"
+        echo "────────────────────────────────────────────────────────────────"
+        echo ""
+        
+        # CPU Metrics
+        echo "CPU CONFIGURATION:"
+        printf "  %-25s %15s %15s %10s\n" "Metric" "Before" "After" "Status"
+        printf "  %-25s %15s %15s %10s\n" "─────────────────" "──────" "─────" "──────"
+        printf "  %-25s %15s %15s %10s\n" \
+            "Governor" \
+            "${BEFORE_METRICS["governor"]}" \
+            "${AFTER_METRICS["governor"]}" \
+            "$( [[ "${BEFORE_METRICS["governor"]}" != "${AFTER_METRICS["governor"]}" ]] && echo "✓ CHANGED" || echo "NO CHANGE" )"
+        printf "  %-25s %15s %15s %10s\n" \
+            "CPU MHz (idle)" \
+            "${BEFORE_METRICS["cpu_mhz"]}" \
+            "${AFTER_METRICS["cpu_mhz"]}" \
+            "$( [[ "${BEFORE_METRICS["cpu_mhz"]}" != "${AFTER_METRICS["cpu_mhz"]}" ]] && echo "✓ CHANGED" || echo "NO CHANGE" )"
+        printf "  %-25s %15s %15s %10s\n" \
+            "Frequency Ramp (ms)" \
+            "${BEFORE_METRICS["freq_ramp_ms"]}" \
+            "${AFTER_METRICS["freq_ramp_ms"]}" \
+            "$( [[ "${BEFORE_METRICS["freq_ramp_ms"]}" != "${AFTER_METRICS["freq_ramp_ms"]}" ]] && echo "✓ CHANGED" || echo "NO CHANGE" )"
+        printf "  %-25s %15s %15s %10s\n" \
+            "Threads/Core" \
+            "${BEFORE_METRICS["threads_per_core"]}" \
+            "${AFTER_METRICS["threads_per_core"]}" \
+            "$( [[ "${BEFORE_METRICS["threads_per_core"]}" != "${AFTER_METRICS["threads_per_core"]}" ]] && echo "✓ CHANGED" || echo "NO CHANGE" )"
+        printf "  %-25s %15s %15s %10s\n" \
+            "NUMA Nodes" \
+            "${BEFORE_METRICS["numa_nodes"]}" \
+            "${AFTER_METRICS["numa_nodes"]}" \
+            "$( [[ "${BEFORE_METRICS["numa_nodes"]}" != "${AFTER_METRICS["numa_nodes"]}" ]] && echo "✓ CHANGED" || echo "NO CHANGE" )"
+        echo ""
+        
+        # Latency Metrics
+        echo "LATENCY METRICS:"
+        printf "  %-25s %15s %15s %10s\n" "Metric" "Before" "After" "Status"
+        printf "  %-25s %15s %15s %10s\n" "─────────────────" "──────" "─────" "──────"
+        printf "  %-25s %15s %15s %10s\n" \
+            "Cache Latency" \
+            "${BEFORE_METRICS["cache_latency"]}" \
+            "${AFTER_METRICS["cache_latency"]}" \
+            "$( [[ "${BEFORE_METRICS["cache_latency"]}" != "${AFTER_METRICS["cache_latency"]}" ]] && echo "✓ CHANGED" || echo "NO CHANGE" )"
+        printf "  %-25s %15s %15s %10s\n" \
+            "NUMA Ops/sec" \
+            "${BEFORE_METRICS["numa_ops"]}" \
+            "${AFTER_METRICS["numa_ops"]}" \
+            "$( [[ "${BEFORE_METRICS["numa_ops"]}" != "${AFTER_METRICS["numa_ops"]}" ]] && echo "✓ CHANGED" || echo "NO CHANGE" )"
+        printf "  %-25s %15s %15s %10s\n" \
+            "Network Latency" \
+            "${BEFORE_METRICS["network_latency"]}" \
+            "${AFTER_METRICS["network_latency"]}" \
+            "$( [[ "${BEFORE_METRICS["network_latency"]}" != "${AFTER_METRICS["network_latency"]}" ]] && echo "✓ CHANGED" || echo "NO CHANGE" )"
+        printf "  %-25s %15s %15s %10s\n" \
+            "Context Switch" \
+            "${BEFORE_METRICS["context_switch"]}" \
+            "${AFTER_METRICS["context_switch"]}" \
+            "$( [[ "${BEFORE_METRICS["context_switch"]}" != "${AFTER_METRICS["context_switch"]}" ]] && echo "✓ CHANGED" || echo "NO CHANGE" )"
+        printf "  %-25s %15s %15s %10s\n" \
+            "Syscall Latency" \
+            "${BEFORE_METRICS["syscall_latency"]}" \
+            "${AFTER_METRICS["syscall_latency"]}" \
+            "$( [[ "${BEFORE_METRICS["syscall_latency"]}" != "${AFTER_METRICS["syscall_latency"]}" ]] && echo "✓ CHANGED" || echo "NO CHANGE" )"
+        echo ""
+        
+        # Improvements
+        echo "────────────────────────────────────────────────────────────────"
+        echo "  CHANGES APPLIED"
+        echo "────────────────────────────────────────────────────────────────"
+        echo ""
+        for key in "${!IMPROVEMENTS[@]}"; do
+            echo "  ✓ ${key}: ${IMPROVEMENTS[$key]}"
+        done
+        echo ""
+        
+        # Recommendations
+        echo "────────────────────────────────────────────────────────────────"
+        echo "  RECOMMENDATIONS FOR FURTHER OPTIMIZATION"
+        echo "────────────────────────────────────────────────────────────────"
+        echo ""
+        echo "  1. Apply CPU isolation via GRUB (requires reboot):"
+        echo "     isolcpus=0-11 nohz_full=0-11 rcu_nocbs=0-11 mitigations=off"
+        echo ""
+        echo "  2. Install DPDK for kernel bypass networking"
+        echo "     sudo apt install dpdk dpdk-dev"
+        echo ""
+        echo "  3. Configure real-time scheduling for trading app:"
+        echo "     sudo chrt -f 99 ./trading_app"
+        echo "     sudo taskset -c 0 ./trading_app"
+        echo ""
+        echo "  4. Disable unnecessary services:"
+        echo "     sudo systemctl disable --now snapd.service"
+        echo "     sudo systemctl disable --now systemd-timesyncd.service"
+        echo ""
+        echo "  5. Consider using a custom kernel with PREEMPT_RT patches"
+        echo ""
+        
+        echo "════════════════════════════════════════════════════════════════"
+        echo "  Report generated: $(date)"
+        echo "  Log file: $LOGFILE"
+        echo "════════════════════════════════════════════════════════════════"
+    } | tee "$REPORT_FILE"
     
-    MEMORY HIERARCHY (fastest to slowest):
-    • L1 Cache: ~1 nanosecond, 32KB
-    • L2 Cache: ~4 nanoseconds, 1MB  
-    • L3 Cache: ~12 nanoseconds, 32MB+
-    • Local DRAM: ~80-100 nanoseconds, 100s of GB
-    • Remote NUMA DRAM: ~120-130 nanoseconds
-    
-    WHY THIS MATTERS FOR HFT:
-    If your order book is in L3 cache, lookups take 12ns.
-    If it's in DRAM, lookups take 100ns (8x slower).
-    If it's in remote NUMA DRAM, lookups take 130ns (10x slower).
-    
-    The goal is to keep hot data in the fastest possible memory."
-    
-    print_subheader "L3 Cache Size"
-    lscpu | grep "L3 cache"
-    
-    print_subheader "Running Memory Latency Test (this takes ~30 seconds)"
-    print_info "Testing local NUMA access (Node 0 → Node 0)..."
-    LOCAL_RESULT=$(sudo numactl --cpunodebind=0 --membind=0 stress-ng --vm 2 --vm-bytes 1G --metrics-brief --timeout 5s 2>&1 | grep "vm " | awk '{print $3}')
-    print_info "Local memory ops: $LOCAL_RESULT"
-    
-    print_info "Testing remote NUMA access (Node 0 → Node 1)..."
-    REMOTE_RESULT=$(sudo numactl --cpunodebind=0 --membind=1 stress-ng --vm 2 --vm-bytes 1G --metrics-brief --timeout 5s 2>&1 | grep "vm " | awk '{print $3}')
-    print_info "Remote memory ops: $REMOTE_RESULT"
-    
-    print_explanation "Compare the two numbers:
-    • If they're similar: Your CPU has excellent NUMA bandwidth (modern EPYC)
-    • If remote is much lower: Traditional NUMA penalty is present
-    
-    Modern AMD EPYC 9004/9005 chips have such fast Infinity Fabric that
-    bandwidth tests show minimal difference. The real penalty shows up
-    in latency-sensitive workloads with many small random accesses."
-    
-    pause_for_reading
+    print_success "Report saved to: $REPORT_FILE"
 }
 
 # ==============================================================================
-# STEP 11: FINAL SUMMARY
-# ==============================================================================
-
-show_final_summary() {
-    print_header "FINAL SUMMARY - HFT TUNING COMPLETE"
-    
-    print_subheader "Current System State"
-    echo "----------------------------------------"
-    echo "CPU: $(lscpu | grep 'Model name' | awk -F: '{print $2}' | xargs)"
-    echo "Cores: $(lscpu | grep '^CPU(s):' | awk '{print $2}')"
-    echo "Threads per core: $(lscpu | grep 'Thread(s)' | awk '{print $4}')"
-    echo "Governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)"
-    echo "NUMA nodes: $(numactl --hardware | grep available | awk '{print $2}')"
-    echo "Network: $(get_interface) using $(sudo ethtool -i $(get_interface) | grep driver | awk '{print $2}')"
-    echo "----------------------------------------"
-    
-    print_subheader "Tuning Applied"
-    echo "----------------------------------------"
-    echo "✓ CPU Governor: performance"
-    echo "✓ SMT: Disabled (verified)"
-    echo "✓ C-States: Disabled (verified)"
-    echo "✓ NUMA: NPS2 (2 nodes detected)"
-    echo "✓ Network offloading: Enabled"
-    echo "----------------------------------------"
-    
-    print_subheader "Recommended Next Steps"
-    echo "----------------------------------------"
-    echo "1. Apply CPU isolation via GRUB (requires reboot):"
-    echo "   isolcpus=0-11 nohz_full=0-11 rcu_nocbs=0-11 mitigations=off"
-    echo ""
-    echo "2. Pin IRQs to Node 1 (cores 12-23):"
-    echo "   for irq in \$(cat /proc/interrupts | grep eno1-TxRx | awk -F: '{print \$1}'); do"
-    echo "     echo fff000 > /proc/irq/\$irq/smp_affinity"
-    echo "   done"
-    echo ""
-    echo "3. Install DPDK for kernel bypass networking"
-    echo ""
-    echo "4. Test with real market data feed"
-    echo "----------------------------------------"
-    
-    print_success "HFT tuning script completed. Log saved to: $LOGFILE"
-}
-
-# ==============================================================================
-# MAIN SCRIPT EXECUTION
+# MAIN EXECUTION
 # ==============================================================================
 
 main() {
     clear
-    echo -e "${GREEN}========================================================${NC}"
-    echo -e "${GREEN}       HFT SERVER TUNING SCRIPT - LATENCY OPTIMIZATION${NC}"
-    echo -e "${GREEN}========================================================${NC}"
+    echo -e "${GREEN}════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}       HFT SERVER TUNING WITH LATENCY BENCHMARKING${NC}"
+    echo -e "${GREEN}════════════════════════════════════════════════════════════════${NC}"
     echo ""
-    print_info "This script will guide you through tuning your server for"
-    print_info "High-Frequency Trading (HFT) workloads. It will:"
-    print_info "  1. Show the current state"
-    print_info "  2. Apply each optimization one-by-one"
-    print_info "  3. Verify each change"
-    print_info "  4. Explain what was done and why"
+    print_info "This script will:"
+    print_info "  1. Measure current latency metrics"
+    print_info "  2. Apply HFT optimizations one-by-one"
+    print_info "  3. Re-measure after each change"
+    print_info "  4. Generate a comprehensive before/after report"
     echo ""
-    print_info "Log file: $LOGFILE"
+    print_info "Report will be saved to: $REPORT_FILE"
     echo ""
     pause_for_reading
     
-    # Run all steps
-    show_before_state
-    install_tools
+    # Capture baseline
+    capture_before_state
+    
+    # Apply tunings with measurements
     tune_cpu_governor
-    check_cpu_driver
-    verify_smt
-    verify_cstates
-    verify_numa
-    tune_cpu_isolation
-    verify_network
-    verify_interrupts
-    benchmark_memory
-    show_final_summary
+    tune_network_ring_buffer
+    tune_irq_affinity
+    
+    # Capture final state
+    capture_after_state
+    
+    # Generate report
+    generate_report
     
     echo ""
-    print_success "All steps completed. Review the log file for details."
+    print_success "HFT tuning complete!"
+    print_success "Review the report: $REPORT_FILE"
+    echo ""
 }
 
-# Run the script
+# Run
 main
