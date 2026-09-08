@@ -1,9 +1,0 @@
-#cloud-config
-users:
-  - name: almalinux
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    groups: wheel
-    shell: /bin/bash
-    ssh_authorized_keys:
-      - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDQ8NoEcrS7HzJvd5JXYchfKagOtvIdmuyDWe6f6UDqc3db7dKehqP+77Z7pHC6BsOTfPN/mGR1dqOfYSTkipgOuttwLlnEd1uLzOVO2k/+rvFTvQoF7IBEt6TNaBqtdYFEjX5zfM6Dsc8sQdSpbMh73JZckPf57t+oRXv7dXAxWzlCj5f9MRoyYI08S/eHUrZ3v+4kYl67hPJPVUc5qFvLOSpV8Fq6FSXY/wd7Kk4BZHKE9hc5S/aHXpi3AT6gyX7+JklJ9sK8DBtvRFS+RjY4oybykUR7LufHXrT13IoAHaFjN73EWiaJ0WSSCq+jm2csarnbvt7pqBn5MaKneXv1IbbxaG1pPYnT79Ogx/cINsInY5VxRS0DMdcjmT3c3BMiTiPKN6Yi3eFFSE7xsKzD9kKegk0/qtyuApNJHlYpSLYpAx314qonNltTYk/6vHAD0v2Pd264B6bvyFnXRTFw8VRh+Kq8c6KYD1kFUI0rZqGQqVl9OE3qWhX4pfK2ITk= neville@penguin
-ssh_pwauth: false
