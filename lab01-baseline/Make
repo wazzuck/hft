@@ -1,0 +1,27 @@
+# Compiler and flags
+CC = gcc
+CFLAGS = -Wall -Wextra -O2
+
+# Target executable
+TARGET = hello
+
+# Source files
+SRCS = hello.c
+
+# Default target
+all: $(TARGET)
+
+# Link the program
+$(TARGET): $(SRCS)
+	$(CC) $(CFLAGS) $(SRCS) -o $(TARGET)
+
+# Clean up object files and executable
+clean:
+	rm -f $(TARGET)
+
+# Run the program
+run: $(TARGET)
+	./$(TARGET)
+
+# Phony targets (not actual files)
+.PHONY: all clean run

@@ -12,7 +12,7 @@ echo "===GIT==="
 git --version
 
 echo "===PYTHON==="
-python3 --versionA
+python3 --version
 
 echo "===PROJECT==="
 pwd
