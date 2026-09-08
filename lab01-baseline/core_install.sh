@@ -13,6 +13,4 @@ python3-pip \
 python3-venv \
 openssh-client
 
-make hello
-
 EDITOR=vi

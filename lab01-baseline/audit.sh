@@ -18,4 +18,5 @@ echo "===PROJECT==="
 pwd
 
 echo "===EXECUTION==="
+make hello
 ./hello
