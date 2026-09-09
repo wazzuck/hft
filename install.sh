@@ -17,6 +17,33 @@ RED='\033[0;31m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+INSTALL_VUNDERLAND=false
+VUNDERLAND_REPO="git@github.com:wazzuck/vunderland.git"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --vunderland|--with-vunderland)
+            INSTALL_VUNDERLAND=true
+            shift
+            ;;
+        --vunderland-repo)
+            VUNDERLAND_REPO="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "Usage: $(basename "$0") [OPTIONS]"
+            echo "Options:"
+            echo "  --vunderland, --with-vunderland   Also clone and configure Vunderland environment."
+            echo "  --vunderland-repo <url>           Custom Vunderland repository URL."
+            echo "  -h, --help                        Show this help."
+            exit 0
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
 print_header() {
     echo -e "\n${BLUE}${BOLD}══════════════════════════════════════════════════════════════════════════${NC}"
     echo -e "${CYAN}${BOLD}  $1${NC}"
@@ -59,7 +86,7 @@ print_success "Base system packages installed successfully."
 print_header "STEP 2: INSTALLING ANTIGRAVITY CLI (AGY)"
 
 print_info "Fetching and running official Antigravity CLI installer..."
-if curl -fsSL https://antigravity.google/cli/install.sh | bash; then
+if curl -4 -fsSL --retry 3 --retry-delay 2 https://antigravity.google/cli/install.sh | bash; then
     print_success "Antigravity CLI installer completed successfully."
 else
     print_error "Failed to install Antigravity CLI via official script."
@@ -77,7 +104,24 @@ for p in "$HOME/.local/bin" "$HOME/bin"; do
     fi
 done
 
-print_header "STEP 3: VERIFYING INSTALLATIONS"
+if [ "$INSTALL_VUNDERLAND" = true ]; then
+    print_header "STEP 3: CLONING VUNDERLAND & RUNNING VUNDERLAND SETUP"
+    if [ -d "$HOME/vunderland/.git" ]; then
+        print_info "Vunderland already cloned at ~/vunderland. Pulling latest..."
+        git -C "$HOME/vunderland" pull --rebase origin master 2>/dev/null || true
+    else
+        print_info "Cloning $VUNDERLAND_REPO into ~/vunderland..."
+        git clone "$VUNDERLAND_REPO" "$HOME/vunderland"
+    fi
+    if [ -f "$HOME/vunderland/settings/setup.sh" ]; then
+        print_info "Executing ~/vunderland/settings/setup.sh..."
+        chmod +x "$HOME/vunderland/settings/setup.sh"
+        bash "$HOME/vunderland/settings/setup.sh" penguin
+        print_success "Vunderland setup executed successfully."
+    fi
+fi
+
+print_header "STEP 4: VERIFYING INSTALLATIONS"
 
 echo ""
 # Verify Git
@@ -101,6 +145,11 @@ elif [ -f "$HOME/.local/bin/agy" ]; then
     print_success "AGY : Installed at $HOME/.local/bin/agy (Reload shell or run 'source ~/.bashrc')"
 else
     print_info "AGY : Installed. Please run 'source ~/.bashrc' or reload your terminal session."
+fi
+
+# Verify Vunderland if installed
+if [ -d "$HOME/vunderland" ]; then
+    print_success "Vunderland: Installed at $HOME/vunderland ($(git -C "$HOME/vunderland" rev-parse --short HEAD 2>/dev/null || echo 'master'))"
 fi
 
 echo -e "\n${GREEN}${BOLD}Setup completed successfully!${NC}\n"

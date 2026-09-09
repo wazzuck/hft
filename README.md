@@ -549,6 +549,8 @@ Host trading-srv01
    - Kernel bypass & BPF: `libxdp`, `libxdp-devel`, `libbpf`, `libbpf-devel`, `xdp-tools`
    - Hardware diagnostics: `msr-tools` (`rdmsr`), `dmidecode`, `pciutils`, `ethtool`
 5. **Git Repository Synchronization**: Verifies GitHub SSH authentication and automatically clones `git@github.com:wazzuck/hft.git` to `~/hft`.
+6. **Vunderland Environment Deployment**: Clones `git@github.com:wazzuck/vunderland.git` to `~/vunderland` and executes `vunderland/settings/setup.sh` to provision micromamba, Python base environment, Rust toolchain, and dotfiles.
+7. **Master Latency Engine Configuration**: Ensures `hft_tuning.sh` is configured and executable exclusively in `~/hft/hft_tuning.sh`.
 
 ---
 
@@ -584,13 +586,15 @@ For a completely automated, zero-touch tear-down and rebuild of the AlmaLinux si
 3. **Remote Server Toolchain Provisioning**: Runs [`setup_remote_server.sh`](file:///home/neville/hft/setup_remote_server.sh) to:
    - Synchronize local SSH credentials so the VM can pull from private Git repositories.
    - Enable AlmaLinux CRB (CodeReady Linux Builder) and EPEL package repositories.
-   - Install C/C++ compiler toolchains (`gcc`, `g++`, `make`, `cmake`), low-latency kernel bypass packages (`libxdp`, `libbpf`), and profiling tools (`perf`, `numactl`, `cyclictest`).
+   - Install C/C++ compiler toolchains (`gcc`, `g++`, `make`, `cmake`), low-latency kernel bypass packages (`libxdp`, `libbpf`), profiling tools (`perf`, `numactl`, `cyclictest`), and download utilities (`wget`, `curl`).
    - Authenticate with GitHub and clone `git@github.com:wazzuck/hft.git` to `~/hft`.
+   - Clone `git@github.com:wazzuck/vunderland.git` to `~/vunderland` and execute `vunderland/settings/setup.sh` (provisions micromamba, Python base environment, Rust toolchain, and developer dotfiles).
+   - Configure master latency tuning engine strictly in `~/hft/hft_tuning.sh`.
 4. **Environment Setup & AGY CLI Installation**: Connects to the VM over SSH and executes [`install.sh`](file:///home/neville/hft/install.sh):
    - Installs `tmux`, `git`, `curl`, and `ca-certificates`.
    - Downloads and installs the **Google Antigravity CLI (`agy`)** via its official bootstrapper.
    - Configures `PATH` persistence in `~/.bashrc`.
-5. **Post-Setup Health Verification**: Validates operating system version, `git`, `tmux`, and `agy` installation on the VM, confirming it is ready for low-latency tuning experiments.
+5. **Post-Setup Health Verification**: Validates operating system version, `git`, `tmux`, `agy`, `hft` repo, `vunderland` repo, micromamba, and Rust toolchain on the VM, confirming it is fully ready for low-latency tuning experiments.
 
 ---
 

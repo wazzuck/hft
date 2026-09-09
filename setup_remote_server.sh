@@ -91,6 +91,11 @@ Options:
   --dir <path>         Destination directory on the remote server for the repo.
                        (Default: ~/hft)
   --branch <name>      Git branch to checkout after cloning (optional).
+  --vunderland-repo <url>
+                       Git repository URL for Vunderland dotfiles/environment setup.
+                       (Default: git@github.com:wazzuck/vunderland.git)
+  --no-vunderland, --skip-vunderland
+                       Skip cloning and running vunderland/settings/setup.sh.
   --no-repo            Skip cloning the Git repository.
   --skip-tools         Skip installing packages; only deploy SSH keys and Git repo.
   --dry-run            Validate SSH connectivity and display parameters without modifying the server.
@@ -121,6 +126,8 @@ GIT_REPO="git@github.com:wazzuck/hft.git"
 TARGET_DIR="~/hft"
 GIT_BRANCH=""
 CLONE_REPO=true
+VUNDERLAND_REPO="git@github.com:wazzuck/vunderland.git"
+CLONE_VUNDERLAND=true
 INSTALL_TOOLS=true
 DRY_RUN=false
 
@@ -137,6 +144,14 @@ while [[ $# -gt 0 ]]; do
         --branch)
             GIT_BRANCH="$2"
             shift 2
+            ;;
+        --vunderland-repo)
+            VUNDERLAND_REPO="$2"
+            shift 2
+            ;;
+        --no-vunderland|--skip-vunderland)
+            CLONE_VUNDERLAND=false
+            shift
             ;;
         --no-repo)
             CLONE_REPO=false
@@ -196,8 +211,9 @@ print_field "Resolved HostName" "${RESOLVED_HOSTNAME:-$DEST_HOST}"
 print_field "Resolved User" "${RESOLVED_USER:-$USER}"
 print_field "Resolved Port" "${RESOLVED_PORT:-22}"
 print_field "Resolved Identity" "${RESOLVED_KEY:-default}"
-print_field "Git Repository" "$GIT_REPO"
+print_field "HFT Git Repository" "$GIT_REPO"
 print_field "Target Directory" "$TARGET_DIR"
+print_field "Vunderland Repo" "$VUNDERLAND_REPO (Deploy: $CLONE_VUNDERLAND)"
 
 if [ "$DRY_RUN" = true ]; then
     print_warning "Dry-run mode active. No changes will be made to the remote server."
@@ -273,6 +289,15 @@ if [ -f "$LOCAL_SSH_DIR/config" ]; then
     print_success "Transferred ~/.ssh/config (mode 0600)"
 fi
 
+# Ensure github.com uses IPv4 AddressFamily to avoid unrouted IPv6/NAT64 hangs
+ssh "$DEST_HOST" '
+    if ! grep -qs "AddressFamily inet" ~/.ssh/config 2>/dev/null; then
+        mkdir -p ~/.ssh && touch ~/.ssh/config
+        printf "\nHost github.com gitlab.com\n    AddressFamily inet\n" >> ~/.ssh/config
+        chmod 600 ~/.ssh/config
+    fi
+'
+
 # Transfer ~/.ssh/known_hosts if exists locally
 if [ -f "$LOCAL_SSH_DIR/known_hosts" ]; then
     scp -q "$LOCAL_SSH_DIR/known_hosts" "$DEST_HOST:~/.ssh/known_hosts"
@@ -337,13 +362,14 @@ if command -v dnf >/dev/null 2>&1; then
         sudo dnf config-manager --set-enabled crb >/dev/null 2>&1 || true
     fi
 
-    echo "  -> Installing C++ Developer Toolchain (gcc, g++, make, cmake, git, gdb, valgrind)..."
+    echo "  -> Installing C++ Developer Toolchain (gcc, g++, make, cmake, git, tmux, gdb, valgrind)..."
     sudo dnf install -y \
         gcc \
         gcc-c++ \
         make \
         cmake \
         git \
+        tmux \
         gdb \
         valgrind \
         pkgconf \
@@ -380,6 +406,8 @@ if command -v dnf >/dev/null 2>&1; then
         htop \
         iotop \
         jq \
+        wget \
+        curl \
         python3 \
         python3-pip \
         python3-devel >/dev/null 2>&1 || true
@@ -396,6 +424,7 @@ elif command -v apt-get >/dev/null 2>&1; then
         make \
         cmake \
         git \
+        tmux \
         gdb \
         valgrind \
         rt-tests \
@@ -417,6 +446,8 @@ elif command -v apt-get >/dev/null 2>&1; then
         htop \
         iotop \
         jq \
+        wget \
+        curl \
         python3 \
         python3-pip \
         python3-dev >/dev/null 2>&1 || true
@@ -453,10 +484,23 @@ if [ -d "$EXPANDED_DIR/.git" ]; then
 else
     echo "  -> Cloning $REPO_URL into $EXPANDED_DIR..."
     mkdir -p "$(dirname "$EXPANDED_DIR")"
-    if [ -n "$BRANCH" ]; then
-        git clone --branch "$BRANCH" "$REPO_URL" "$EXPANDED_DIR"
-    else
-        git clone "$REPO_URL" "$EXPANDED_DIR"
+    CLONED=false
+    for attempt in 1 2 3 4 5; do
+        if [ -n "$BRANCH" ]; then
+            if git clone --branch "$BRANCH" "$REPO_URL" "$EXPANDED_DIR"; then
+                CLONED=true; break
+            fi
+        else
+            if git clone "$REPO_URL" "$EXPANDED_DIR"; then
+                CLONED=true; break
+            fi
+        fi
+        echo "  ! Git clone attempt $attempt failed (network or DNS). Retrying in 3s..."
+        sleep 3
+    done
+    if [ "$CLONED" = false ]; then
+        echo "  ✗ Failed to clone $REPO_URL after 5 attempts."
+        exit 1
     fi
     echo "  -> Successfully cloned repository."
 fi
@@ -471,9 +515,77 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 9. CONFIGURING HFT LATENCY TUNING & TESTING SUITE
+# 9. AUTOMATED VUNDERLAND REPOSITORY SETUP & ENVIRONMENT CONFIGURATION
 # ------------------------------------------------------------------------------
-print_header "STEP 5: CONFIGURING MASTER LATENCY TUNING ENGINE"
+if [ "$CLONE_VUNDERLAND" = true ]; then
+    print_header "STEP 5: CLONING VUNDERLAND & RUNNING VUNDERLAND SETUP"
+    print_info "Cloning $VUNDERLAND_REPO into ~/vunderland and executing setup.sh..."
+
+    ssh "$DEST_HOST" "bash -s" -- "$VUNDERLAND_REPO" << 'EOF_VUNDERLAND'
+set -eo pipefail
+
+VUNDERLAND_URL="$1"
+VUNDERLAND_DIR="$HOME/vunderland"
+
+if [ -d "$VUNDERLAND_DIR/.git" ]; then
+    echo "  -> Vunderland repository already exists at $VUNDERLAND_DIR. Synchronizing..."
+    git -C "$VUNDERLAND_DIR" remote set-url origin "$VUNDERLAND_URL" 2>/dev/null || true
+    git -C "$VUNDERLAND_DIR" fetch origin >/dev/null 2>&1 || true
+    CURRENT_BRANCH="$(git -C "$VUNDERLAND_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "master")"
+    git -C "$VUNDERLAND_DIR" pull --rebase origin "$CURRENT_BRANCH" 2>/dev/null || true
+    echo "  -> Synchronized existing repository on branch: $CURRENT_BRANCH"
+else
+    echo "  -> Cloning $VUNDERLAND_URL into $VUNDERLAND_DIR..."
+    CLONED=false
+    for attempt in 1 2 3 4 5; do
+        if git clone "$VUNDERLAND_URL" "$VUNDERLAND_DIR"; then
+            CLONED=true; break
+        fi
+        echo "  ! Vunderland clone attempt $attempt failed. Retrying in 3s..."
+        sleep 3
+    done
+    if [ "$CLONED" = false ]; then
+        echo "  ✗ Failed to clone $VUNDERLAND_URL after 5 attempts."
+        exit 1
+    fi
+    echo "  -> Successfully cloned vunderland repository."
+fi
+
+COMMIT_INFO="$(git -C "$VUNDERLAND_DIR" log -1 --oneline 2>/dev/null || echo "Initial")"
+echo "  -> Latest Commit: $COMMIT_INFO"
+
+# Execute vunderland/settings/setup.sh
+if [ -f "$VUNDERLAND_DIR/settings/setup.sh" ]; then
+    echo "  -> Setting executable permissions on $VUNDERLAND_DIR/settings/setup.sh..."
+    chmod +x "$VUNDERLAND_DIR/settings/setup.sh"
+    echo "  -> Executing $VUNDERLAND_DIR/settings/setup.sh..."
+    # Pass 'penguin' to instruct setup.sh to execute locally without interactive prompts
+    bash "$VUNDERLAND_DIR/settings/setup.sh" penguin
+    echo "  -> Vunderland setup.sh completed successfully."
+else
+    echo "  ! Warning: $VUNDERLAND_DIR/settings/setup.sh not found."
+fi
+
+# Ensure strict permissions on SSH keys and directory
+if [ -L "$HOME/.ssh" ] || [ -d "$HOME/.ssh" ]; then
+    chmod 700 "$HOME/.ssh" 2>/dev/null || true
+    chmod 600 "$HOME/.ssh/id_"* 2>/dev/null || true
+    chmod 600 "$HOME/.ssh/authorized_keys" 2>/dev/null || true
+    chmod 644 "$HOME/.ssh/"*.pub 2>/dev/null || true
+    chmod 644 "$HOME/.ssh/config" 2>/dev/null || true
+    chmod 644 "$HOME/.ssh/known_hosts" 2>/dev/null || true
+fi
+EOF_VUNDERLAND
+
+    print_success "Vunderland repository deployed and setup script executed successfully."
+else
+    print_info "Skipping Vunderland setup (--skip-vunderland specified)."
+fi
+
+# ------------------------------------------------------------------------------
+# 10. CONFIGURING HFT LATENCY TUNING & TESTING SUITE
+# ------------------------------------------------------------------------------
+print_header "STEP 6: CONFIGURING MASTER LATENCY TUNING ENGINE"
 
 LOCAL_TUNING_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/hft_tuning.sh"
 print_info "Configuring hft_tuning.sh in '$TARGET_DIR'..."
@@ -490,7 +602,7 @@ ssh "$DEST_HOST" "EXP_DIR=\$(eval echo $TARGET_DIR); \
 print_success "Master latency tuning engine configured exclusively in: $TARGET_DIR/hft_tuning.sh"
 
 # ------------------------------------------------------------------------------
-# 10. DEPLOYMENT VERIFICATION & SUMMARY
+# 11. DEPLOYMENT VERIFICATION & SUMMARY
 # ------------------------------------------------------------------------------
 print_header "PROVISIONING & DEPLOYMENT COMPLETED SUCCESSFULLY"
 
@@ -498,7 +610,8 @@ print_subheader "Remote Environment Summary"
 print_field "Target Host" "$DEST_HOST (${RESOLVED_HOSTNAME:-$DEST_HOST})"
 print_field "Remote User" "${RESOLVED_USER:-$USER}"
 print_field "SSH Key Auth" "Active (keys transferred to remote ~/.ssh)"
-print_field "Git Repo Path" "$TARGET_DIR"
+print_field "HFT Repo Path" "$TARGET_DIR"
+print_field "Vunderland Path" "$([ "$CLONE_VUNDERLAND" = true ] && echo '~/vunderland' || echo 'Skipped')"
 
 print_subheader "Installed Tools Verification"
 ssh "$DEST_HOST" 'bash -s' << 'EOF_VERIFY'
@@ -510,6 +623,17 @@ printf "  %-18s : %s\n" "Cyclictest" "$(sudo cyclictest 2>&1 | head -1 || echo '
 printf "  %-18s : %s\n" "Numactl" "$(numactl --version 2>/dev/null | head -1 || echo 'Installed')"
 printf "  %-18s : %s\n" "Tuned" "$(tuned --version 2>/dev/null | head -1 || echo 'Installed')"
 printf "  %-18s : %s\n" "Perf" "$(perf --version 2>/dev/null | head -1 || echo 'Installed')"
+if [ -d "$HOME/vunderland" ]; then
+    printf "  %-18s : %s\n" "Vunderland" "Installed ($HOME/vunderland - $(git -C "$HOME/vunderland" rev-parse --short HEAD 2>/dev/null || echo 'master'))"
+fi
+if [ -f "$HOME/micromamba/bin/micromamba" ]; then
+    printf "  %-18s : %s\n" "Micromamba" "$("$HOME/micromamba/bin/micromamba" --version 2>/dev/null || echo 'Installed')"
+fi
+if command -v rustc >/dev/null 2>&1; then
+    printf "  %-18s : %s\n" "Rust" "$(rustc --version 2>/dev/null)"
+elif [ -f "$HOME/.cargo/bin/rustc" ]; then
+    printf "  %-18s : %s\n" "Rust" "$("$HOME/.cargo/bin/rustc" --version 2>/dev/null)"
+fi
 EOF_VERIFY
 
 echo ""

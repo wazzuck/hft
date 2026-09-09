@@ -92,6 +92,8 @@ fi
 
 AUTO_CONFIRM=false
 RUN_INSTALL=true
+CLONE_VUNDERLAND=true
+VUNDERLAND_REPO="git@github.com:wazzuck/vunderland.git"
 GIT_REPO="git@github.com:wazzuck/hft.git"
 TARGET_DIR="~/hft"
 VM_NAME="hft-alma"
@@ -105,13 +107,17 @@ Usage: $(basename "$0") [OPTIONS]
 Workflow:
   1. Destroys the active AlmaLinux KVM VM ('${VM_NAME}') and wipes overlay state.
   2. Provisions a fresh Copy-on-Write AlmaLinux 9 VM using host CPU passthrough.
-  3. Runs setup_remote_server.sh to deploy SSH keys and clone ${GIT_REPO}.
+  3. Runs setup_remote_server.sh to deploy SSH keys, clone ${GIT_REPO},
+     and clone ${VUNDERLAND_REPO} & execute vunderland/settings/setup.sh.
   4. Connects via SSH and executes ~/hft/install.sh (tmux, git, agy CLI).
   5. Verifies environment readiness.
 
 Options:
   -y, --yes, --force   Auto-confirm VM teardown without interactive prompt.
   --skip-install       Skip running ~/hft/install.sh inside the new VM.
+  --skip-vunderland    Skip cloning and configuring Vunderland environment.
+  --vunderland-repo <url>
+                       Specify custom Vunderland git repository URL.
   -h, --help           Show this help message.
 
 Examples:
@@ -131,6 +137,14 @@ while [[ $# -gt 0 ]]; do
         --skip-install)
             RUN_INSTALL=false
             shift
+            ;;
+        --skip-vunderland|--no-vunderland)
+            CLONE_VUNDERLAND=false
+            shift
+            ;;
+        --vunderland-repo)
+            VUNDERLAND_REPO="$2"
+            shift 2
             ;;
         -h|--help)
             show_help
@@ -213,26 +227,45 @@ fi
 print_success "VM is running with IP: ${NEW_IP}"
 
 # Synchronize IP in ~/.ssh/config if hft-sim entry exists
-if [ -f "$HOME/.ssh/config" ] && grep -q "Host.*hft-sim" "$HOME/.ssh/config"; then
-    CURRENT_CONFIG_IP="$(awk '/Host.*hft-sim/{flag=1; next} flag && /HostName/{print $2; flag=0}' "$HOME/.ssh/config" || true)"
-    if [ -n "$CURRENT_CONFIG_IP" ] && [ "$CURRENT_CONFIG_IP" != "$NEW_IP" ]; then
-        print_info "Updating ~/.ssh/config HostName for 'hft-sim' from $CURRENT_CONFIG_IP to $NEW_IP..."
-        sed -i "/Host.*hft-sim/,/Host /{s/HostName .*/HostName $NEW_IP/}" "$HOME/.ssh/config"
-        print_success "Updated ~/.ssh/config with current VM IP."
-    fi
+if [ -f "$HOME/.ssh/config" ] && grep -q "\bhft-sim\b" "$HOME/.ssh/config"; then
+    python3 -c "
+import re, sys
+path = '$HOME/.ssh/config'
+new_ip = '$NEW_IP'
+try:
+    with open(path, 'r') as f:
+        content = f.read()
+    pattern = r'(\bHost\b[^\n]*\bhft-sim\b[^\n]*\n(?:[ \t]+[^\n]*\n)*?[ \t]+HostName[ \t]+)[^\n]+'
+    new_content, count = re.subn(pattern, r'\g<1>' + new_ip, content)
+    if count > 0 and new_content != content:
+        with open(path, 'w') as f:
+            f.write(new_content)
+        print(f'  ✓ Updated ~/.ssh/config HostName for hft-sim to {new_ip}.')
+except Exception as e:
+    print(f'  ! Warning: could not update ~/.ssh/config: {e}', file=sys.stderr)
+"
 fi
 
 # ------------------------------------------------------------------------------
 # STEP 3: PROVISION REMOTE SERVER & CLONE GIT REPOSITORY
 # ------------------------------------------------------------------------------
-print_header "STEP 3: RUNNING setup_remote_server.sh (DEPLOY KEYS & CLONE REPO)"
+print_header "STEP 3: RUNNING setup_remote_server.sh (DEPLOY KEYS & CLONE REPOS)"
+
+SETUP_ARGS=(
+    "$SSH_ALIAS"
+    --repo "$GIT_REPO"
+    --dir "$TARGET_DIR"
+    --vunderland-repo "$VUNDERLAND_REPO"
+)
+
+if [ "$CLONE_VUNDERLAND" = false ]; then
+    SETUP_ARGS+=(--no-vunderland)
+fi
 
 print_info "Executing remote provisioning against '${SSH_ALIAS}' (${NEW_IP})..."
-bash "$REPO_ROOT/setup_remote_server.sh" "$SSH_ALIAS" \
-    --repo "$GIT_REPO" \
-    --dir "$TARGET_DIR"
+bash "$REPO_ROOT/setup_remote_server.sh" "${SETUP_ARGS[@]}"
 
-print_success "Remote server provisioned and repository cloned to ${TARGET_DIR}."
+print_success "Remote server provisioned and repositories deployed."
 
 # ------------------------------------------------------------------------------
 # STEP 4: RUN install.sh ON THE ALMALINUX VM
@@ -279,7 +312,16 @@ elif [ -f "$HOME/.local/bin/agy" ]; then
 else
     echo "  • Antigravity CLI  : Initialized (Run 'source ~/.bashrc' on login)"
 fi
-echo "  • Repo Directory   : $(ls -d ~/hft 2>/dev/null || echo 'Missing') ($(git -C ~/hft rev-parse --short HEAD 2>/dev/null || echo 'no-git'))"
+echo "  • HFT Repo         : $(ls -d ~/hft 2>/dev/null || echo 'Missing') ($(git -C ~/hft rev-parse --short HEAD 2>/dev/null || echo 'no-git'))"
+echo "  • Vunderland Repo  : $(ls -d ~/vunderland 2>/dev/null || echo 'Missing') ($(git -C ~/vunderland rev-parse --short HEAD 2>/dev/null || echo 'no-git'))"
+if [ -f "$HOME/micromamba/bin/micromamba" ]; then
+    echo "  • Micromamba       : $($HOME/micromamba/bin/micromamba --version 2>/dev/null || echo 'Installed')"
+fi
+if command -v rustc >/dev/null 2>&1; then
+    echo "  • Rust Toolchain   : $(rustc --version 2>/dev/null)"
+elif [ -f "$HOME/.cargo/bin/rustc" ]; then
+    echo "  • Rust Toolchain   : $($HOME/.cargo/bin/rustc --version 2>/dev/null)"
+fi
 EOF_VERIFY
 
 echo ""
