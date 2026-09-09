@@ -471,20 +471,23 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 9. DEPLOYING HFT LATENCY TUNING & TESTING SUITE
+# 9. CONFIGURING HFT LATENCY TUNING & TESTING SUITE
 # ------------------------------------------------------------------------------
-print_header "STEP 5: DEPLOYING MASTER LATENCY TUNING ENGINE"
+print_header "STEP 5: CONFIGURING MASTER LATENCY TUNING ENGINE"
 
 LOCAL_TUNING_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/hft_tuning.sh"
-if [ -f "$LOCAL_TUNING_SCRIPT" ]; then
-    print_info "Deploying hft_tuning.sh to remote server..."
-    scp -q "$LOCAL_TUNING_SCRIPT" "$DEST_HOST:~/hft_tuning.sh"
-    ssh "$DEST_HOST" "chmod +x ~/hft_tuning.sh"
-    
-    # Also place a copy inside the target repo directory if it exists
-    ssh "$DEST_HOST" "EXP_DIR=\$(eval echo $TARGET_DIR); [ -d \"\$EXP_DIR\" ] && cp ~/hft_tuning.sh \"\$EXP_DIR/\" 2>/dev/null || true"
-    print_success "Master latency tuning engine deployed to: ~/hft_tuning.sh"
-fi
+print_info "Configuring hft_tuning.sh in '$TARGET_DIR'..."
+
+ssh "$DEST_HOST" "EXP_DIR=\$(eval echo $TARGET_DIR); \
+    if [ -f \"\$EXP_DIR/hft_tuning.sh\" ]; then \
+        chmod +x \"\$EXP_DIR/hft_tuning.sh\"; \
+    elif [ -d \"\$EXP_DIR\" ]; then \
+        scp -q '$LOCAL_TUNING_SCRIPT' \"\$DEST_HOST:\$EXP_DIR/hft_tuning.sh\"; \
+        chmod +x \"\$EXP_DIR/hft_tuning.sh\"; \
+    fi; \
+    rm -f ~/hft_tuning.sh"
+
+print_success "Master latency tuning engine configured exclusively in: $TARGET_DIR/hft_tuning.sh"
 
 # ------------------------------------------------------------------------------
 # 10. DEPLOYMENT VERIFICATION & SUMMARY
@@ -518,6 +521,6 @@ echo -e "  ${WHITE}${BOLD}2. Navigate to your repository:${NC}"
 echo -e "     ${CYAN}cd $TARGET_DIR${NC}"
 echo ""
 echo -e "  ${WHITE}${BOLD}3. Run the nanosecond latency benchmark & comprehensive tuning suite:${NC}"
-echo -e "     ${CYAN}~/hft_tuning.sh --full${NC}"
+echo -e "     ${CYAN}./hft_tuning.sh --full${NC}"
 echo ""
 echo -e "${BLUE}${BOLD}══════════════════════════════════════════════════════════════════════════${NC}"
