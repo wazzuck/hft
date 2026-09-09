@@ -96,6 +96,9 @@ Before applying operating system tunings, configure the server's UEFI setup (via
 
 Modern ultra-low latency setups often leverage enthusiast hardware like the **AMD Ryzen 9 9950X** processor (Zen 5, 16 physical cores, 32 threads, 64MB L3 cache, up to 5.7 GHz) on **X670E or X870E** enthusiast motherboards (from vendors like ASUS ROG, MSI, or Gigabyte) running standard AMI UEFI BIOS.
 
+> [!TIP]
+> **Architectural Rationale:** The deliberate choice of an enthusiast-grade processor like the 9950X over a massive 128-core server chip is driven by its **favorable high-frequency scaling (up to 5.7 GHz)**. In quantitative trading, maximizing **single-thread low-latency throughput** for the critical path order-execution thread is exponentially more valuable than having a high core count for overall aggregate data throughput.
+
 Due to the modular dual-CCD architecture (2 Core Complex Dies interconnected via the Infinity Fabric), factory BIOS settings can cause cross-die latency penalties and clock-frequency jitter. Follow this tuning guide to achieve deterministic execution.
 
 ```
