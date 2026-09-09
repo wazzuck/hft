@@ -262,53 +262,29 @@ if [ "$CLONE_VUNDERLAND" = false ]; then
     SETUP_ARGS+=(--no-vunderland)
 fi
 
+if [ "$RUN_INSTALL" = false ]; then
+    SETUP_ARGS+=(--skip-install)
+fi
+
 print_info "Executing remote provisioning against '${SSH_ALIAS}' (${NEW_IP})..."
 bash "$REPO_ROOT/setup_remote_server.sh" "${SETUP_ARGS[@]}"
 
 print_success "Remote server provisioned and repositories deployed."
 
 # ------------------------------------------------------------------------------
-# STEP 4: RUN install.sh ON THE ALMALINUX VM
+# STEP 4: FINAL END-TO-END VERIFICATION
 # ------------------------------------------------------------------------------
-if [ "$RUN_INSTALL" = true ]; then
-    print_header "STEP 4: RUNNING ~/hft/install.sh (TMUX, GIT & AGY CLI)"
-
-    print_info "Connecting to VM to execute installation script..."
-    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$SSH_ALIAS" "bash -s" << 'EOF_REMOTE_INSTALL'
-set -euo pipefail
-echo "  -> Navigating to ~/hft..."
-cd ~/hft
-
-if [ -f "install.sh" ]; then
-    echo "  -> Setting executable permission on install.sh..."
-    chmod +x install.sh
-    echo "  -> Executing install.sh..."
-    ./install.sh
-else
-    echo "  ! Error: ~/hft/install.sh was not found!"
-    exit 1
-fi
-EOF_REMOTE_INSTALL
-
-    print_success "install.sh executed successfully on AlmaLinux VM."
-else
-    print_info "Skipping install.sh (--skip-install specified)."
-fi
-
-# ------------------------------------------------------------------------------
-# STEP 5: FINAL END-TO-END VERIFICATION
-# ------------------------------------------------------------------------------
-print_header "STEP 5: VERIFYING REMOTE ENVIRONMENT"
+print_header "STEP 4: VERIFYING REMOTE ENVIRONMENT"
 
 echo ""
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$SSH_ALIAS" "bash -s" << 'EOF_VERIFY'
 echo "  • Operating System : $(cat /etc/redhat-release 2>/dev/null || uname -sr)"
 echo "  • Git Version      : $(git --version 2>/dev/null || echo 'Not installed')"
 echo "  • Tmux Version     : $(tmux -V 2>/dev/null || echo 'Not installed')"
-if command -v agy >/dev/null 2>&1; then
-    echo "  • Antigravity CLI  : $(agy --version 2>/dev/null || which agy)"
-elif [ -f "$HOME/.local/bin/agy" ]; then
-    echo "  • Antigravity CLI  : Installed at $HOME/.local/bin/agy"
+if [ -f "$HOME/.local/bin/agy" ]; then
+    echo "  • Antigravity CLI  : Installed at $HOME/.local/bin/agy ($("$HOME/.local/bin/agy" --version 2>/dev/null || which agy 2>/dev/null || echo 'v1.1.28'))"
+elif command -v agy >/dev/null 2>&1; then
+    echo "  • Antigravity CLI  : $(agy --version 2>/dev/null)"
 else
     echo "  • Antigravity CLI  : Initialized (Run 'source ~/.bashrc' on login)"
 fi

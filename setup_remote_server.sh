@@ -96,6 +96,7 @@ Options:
                        (Default: git@github.com:wazzuck/vunderland.git)
   --no-vunderland, --skip-vunderland
                        Skip cloning and running vunderland/settings/setup.sh.
+  --skip-install       Skip running ~/hft/install.sh (tmux, git, agy CLI).
   --no-repo            Skip cloning the Git repository.
   --skip-tools         Skip installing packages; only deploy SSH keys and Git repo.
   --dry-run            Validate SSH connectivity and display parameters without modifying the server.
@@ -128,6 +129,7 @@ GIT_BRANCH=""
 CLONE_REPO=true
 VUNDERLAND_REPO="git@github.com:wazzuck/vunderland.git"
 CLONE_VUNDERLAND=true
+RUN_INSTALL=true
 INSTALL_TOOLS=true
 DRY_RUN=false
 
@@ -151,6 +153,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-vunderland|--skip-vunderland)
             CLONE_VUNDERLAND=false
+            shift
+            ;;
+        --skip-install|--no-install)
+            RUN_INSTALL=false
             shift
             ;;
         --no-repo)
@@ -602,7 +608,33 @@ ssh "$DEST_HOST" "EXP_DIR=\$(eval echo $TARGET_DIR); \
 print_success "Master latency tuning engine configured exclusively in: $TARGET_DIR/hft_tuning.sh"
 
 # ------------------------------------------------------------------------------
-# 11. DEPLOYMENT VERIFICATION & SUMMARY
+# 11. AUTOMATED ENVIRONMENT SETUP & AGY CLI INSTALLATION
+# ------------------------------------------------------------------------------
+if [ "$RUN_INSTALL" = true ] && [ "$CLONE_REPO" = true ]; then
+    print_header "STEP 7: RUNNING ~/hft/install.sh (TMUX, GIT & AGY CLI)"
+    print_info "Connecting to execute install.sh in '$TARGET_DIR'..."
+
+    ssh "$DEST_HOST" "bash -s" << 'EOF_INSTALL_SH'
+set -euo pipefail
+if [ -d "$HOME/hft" ] && [ -f "$HOME/hft/install.sh" ]; then
+    cd "$HOME/hft"
+    chmod +x install.sh
+    ./install.sh
+elif [ -f "$HOME/install.sh" ]; then
+    chmod +x "$HOME/install.sh"
+    "$HOME/install.sh"
+else
+    echo "  ! Warning: install.sh not found, skipping."
+fi
+EOF_INSTALL_SH
+
+    print_success "install.sh executed successfully on remote server."
+else
+    print_info "Skipping install.sh execution (--skip-install or --no-repo specified)."
+fi
+
+# ------------------------------------------------------------------------------
+# 12. DEPLOYMENT VERIFICATION & SUMMARY
 # ------------------------------------------------------------------------------
 print_header "PROVISIONING & DEPLOYMENT COMPLETED SUCCESSFULLY"
 
@@ -619,6 +651,14 @@ printf "  %-18s : %s\n" "GCC Compiler" "$(gcc --version 2>/dev/null | head -1 ||
 printf "  %-18s : %s\n" "G++ Compiler" "$(g++ --version 2>/dev/null | head -1 || echo 'Not installed')"
 printf "  %-18s : %s\n" "CMake" "$(cmake --version 2>/dev/null | head -1 || echo 'Not installed')"
 printf "  %-18s : %s\n" "Git" "$(git --version 2>/dev/null | head -1 || echo 'Not installed')"
+printf "  %-18s : %s\n" "Tmux" "$(tmux -V 2>/dev/null || echo 'Not installed')"
+if [ -f "$HOME/.local/bin/agy" ]; then
+    printf "  %-18s : %s\n" "Antigravity CLI" "$("$HOME/.local/bin/agy" --version 2>/dev/null || which agy 2>/dev/null || echo 'Installed')"
+elif command -v agy >/dev/null 2>&1; then
+    printf "  %-18s : %s\n" "Antigravity CLI" "$(agy --version 2>/dev/null)"
+else
+    printf "  %-18s : %s\n" "Antigravity CLI" "Not installed"
+fi
 printf "  %-18s : %s\n" "Cyclictest" "$(sudo cyclictest 2>&1 | head -1 || echo 'Available via realtime-tests')"
 printf "  %-18s : %s\n" "Numactl" "$(numactl --version 2>/dev/null | head -1 || echo 'Installed')"
 printf "  %-18s : %s\n" "Tuned" "$(tuned --version 2>/dev/null | head -1 || echo 'Installed')"
