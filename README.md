@@ -60,9 +60,12 @@ hft/
 ├── README.md                          # Master documentation & tuning manual
 ├── hft_tuning.sh                      # Main menu-driven tuning, benchmark & audit suite
 ├── hft_ultra_tune.sh                  # Standalone zero-overhead tuning & benchmark script
+├── install.sh                         # Base installer for tmux, git, and Antigravity CLI (agy)
+├── recreate_simulation.sh             # One-shot script to destroy, rebuild, provision VM & run install.sh
 ├── setup_remote_server.sh             # Automated remote host deployment & toolchain installer
 ├── simulation/
 │   ├── setup_simulation.sh            # Automated AlmaLinux 9 KVM VM creator via cloud-init
+│   ├── recreate_simulation.sh -> ../recreate_simulation.sh
 │   ├── user-data                      # Cloud-init configuration for VM initialization
 │   ├── meta-data                      # Instance metadata (hostname: hft-sim)
 │   ├── hft_tuning.sh -> ../hft_tuning.sh
@@ -562,6 +565,16 @@ cd simulation
 ./setup_simulation.sh ssh      # Log directly into the running VM
 ./setup_simulation.sh sync     # Pull benchmark results into local ./results/
 ./setup_simulation.sh destroy  # Tear down VM and erase temporary disk
+```
+
+### ⚡ One-Shot Simulation Recreation & Automated Provisioning (`recreate_simulation.sh`)
+To completely tear down the active VM, rebuild a clean AlmaLinux instance, provision toolchains and SSH keys, clone the repository, and run `install.sh` (installing `tmux`, `git`, and the `agy` CLI):
+```bash
+# Interactive mode (prompts before teardown):
+./recreate_simulation.sh
+
+# Headless / CI automated mode:
+./recreate_simulation.sh -y
 ```
 
 ### Simulation Specifics
