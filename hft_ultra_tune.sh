@@ -977,9 +977,9 @@ apply_hft_tuning() {
         fi
     done
 
-    # 4. Intel P-state turbo / energy preference
-    if [ -d /sys/devices/system/cpu/intel_pstate ]; then
-        echo 0 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || true
+    # 4. AMD P-state turbo / energy preference
+    if [ -d /sys/devices/system/cpu/amd_pstate ]; then
+        echo 0 | sudo tee /sys/devices/system/cpu/amd_pstate/no_turbo >/dev/null 2>&1 || true
     fi
 
     # 5. Lock PM QoS via /dev/cpu_dma_latency to 0
@@ -1309,7 +1309,7 @@ EOF_SYSCTL
 # HFT RECOMMENDED BARE-METAL BOOT PARAMETERS
 # Append the following line to GRUB_CMDLINE_LINUX in /etc/default/grub:
 # ==============================================================================
-isolcpus=${isolated_cores} nohz=on nohz_full=${isolated_cores} rcu_nocbs=${isolated_cores} rcu_nocb_poll intel_idle.max_cstate=0 processor.max_cstate=0 idle=poll intel_pstate=disable clocksource=tsc tsc=reliable nosmt audit=0 mce=ignore_ce elevator=noop transparent_hugepage=never
+isolcpus=${isolated_cores} nohz=on nohz_full=${isolated_cores} rcu_nocbs=${isolated_cores} rcu_nocb_poll cpuidle.off=1 processor.max_cstate=0 idle=poll amd_pstate=disable clocksource=tsc tsc=reliable nosmt audit=0 mce=ignore_ce elevator=noop transparent_hugepage=never
 
 # Then update GRUB:
 # AlmaLinux/RHEL: sudo grub2-mkconfig -o /boot/grub2/grub.cfg

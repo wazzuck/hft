@@ -920,7 +920,7 @@ revert_tunings() {
 
     # Clean up bootloader args if grubby is installed
     if command -v grubby >/dev/null 2>&1; then
-        local grub_rem="isolcpus nohz nohz_full rcu_nocbs rcu_nocb_poll rcupdate.rcu_normal_after_boot skew_tick intel_idle.max_cstate processor.max_cstate idle intel_pstate clocksource tsc nosmt audit mce transparent_hugepage default_hugepagesz hugepagesz hugepages pcie_aspm mitigations"
+        local grub_rem="isolcpus nohz nohz_full rcu_nocbs rcu_nocb_poll rcupdate.rcu_normal_after_boot skew_tick cpuidle.off processor.max_cstate idle amd_pstate clocksource tsc nosmt audit mce transparent_hugepage default_hugepagesz hugepagesz hugepages pcie_aspm mitigations"
         sudo grubby --update-kernel=ALL --remove-args="$grub_rem" >/dev/null 2>&1 || true
     fi
 
@@ -1174,7 +1174,7 @@ show_grub_parameters() {
     echo -e "     • Node 1 / Cores $trading_cores : ${GREEN}Trading Cores${NC} (Isolated, tickless, zero-overhead)"
     echo ""
 
-    local grub_line="isolcpus=managed_irq,domain,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcu_nocb_poll rcupdate.rcu_normal_after_boot=1 skew_tick=1 intel_idle.max_cstate=0 processor.max_cstate=0 idle=poll intel_pstate=disable clocksource=tsc tsc=reliable nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=1G hugepagesz=1G hugepages=16 pcie_aspm=off mitigations=off"
+    local grub_line="isolcpus=managed_irq,domain,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcu_nocb_poll rcupdate.rcu_normal_after_boot=1 skew_tick=1 cpuidle.off=1 processor.max_cstate=0 idle=poll amd_pstate=disable clocksource=tsc tsc=reliable nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=1G hugepagesz=1G hugepages=16 pcie_aspm=off mitigations=off"
 
     echo -e "${YELLOW}${BOLD}MASTER COMBINED GRUB_CMDLINE_LINUX STRING:${NC}"
     echo -e "${WHITE}${BOLD}--------------------------------------------------------------------------------${NC}"
@@ -1212,10 +1212,10 @@ EOF_GRUB_FILE
      • skew_tick=1                         : Desynchronizes timer ticks across cores to prevent bus stampedes
 
   2. Power Management & C-States (100% C0 Active):
-     • intel_idle.max_cstate=0             : Bypasses Intel proprietary idle driver
+     • cpuidle.off=1             : Hard-disables cpuidle framework
      • processor.max_cstate=0              : Restricts ACPI processor sleep states to C0
      • idle=poll                           : Forces tight busy-spin loop on idle (0ns exit latency)
-     • intel_pstate=disable                : Reverts to acpi-cpufreq driver for manual frequency lock
+     • amd_pstate=disable                : Reverts to acpi-cpufreq driver for manual frequency lock
 
   3. Memory Subsystem & TLB Optimization:
      • transparent_hugepage=never          : Hard-disables runtime THP and khugepaged compaction
@@ -1497,7 +1497,7 @@ apply_grub_parameters() {
     local trading_cores="1-$((total_cpus - 1))"
     [ "$total_cpus" -le 1 ] && trading_cores="0"
 
-    local grub_line="isolcpus=managed_irq,domain,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcu_nocb_poll rcupdate.rcu_normal_after_boot=1 skew_tick=1 intel_idle.max_cstate=0 processor.max_cstate=0 idle=poll intel_pstate=disable clocksource=tsc tsc=reliable nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=1G hugepagesz=1G hugepages=16 pcie_aspm=off mitigations=off"
+    local grub_line="isolcpus=managed_irq,domain,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcu_nocb_poll rcupdate.rcu_normal_after_boot=1 skew_tick=1 cpuidle.off=1 processor.max_cstate=0 idle=poll amd_pstate=disable clocksource=tsc tsc=reliable nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=1G hugepagesz=1G hugepages=16 pcie_aspm=off mitigations=off"
 
     print_info "Detected $total_cpus CPUs. Core isolation mask set to: Cores $trading_cores"
     print_info "Applying master boot string..."
@@ -1705,10 +1705,10 @@ check_all_configs() {
         "nohz_full:Adaptive Tickless Mode (1000Hz off):/sys/devices/system/cpu/nohz_full"
         "rcu_nocbs:RCU Garbage Collection Offloading:/sys/devices/virtual/workqueue/cpumask"
         "rcu_nocb_poll:Polling RCU Offload Threads (No IPI):none"
-        "intel_idle.max_cstate=0:Disables Intel Proprietary C-States:none"
+        "cpuidle.off=1:Disables CPU Idle Framework:none"
         "processor.max_cstate=0:Limits ACPI Processor to C0 Only:none"
         "idle=poll:0ns Busy-Polling Idle Loop:none"
-        "intel_pstate=disable:Disables Autonomous HWP Scaling:none"
+        "amd_pstate=disable:Disables Autonomous HWP Scaling:none"
         "clocksource=tsc:Hardware TSC System Clock:/sys/devices/system/clocksource/clocksource0/current_clocksource"
         "tsc=reliable:Disables Clocksource Watchdog:none"
         "nosmt:Disables SMT / Hyperthreading:none"
@@ -1842,9 +1842,9 @@ check_all_configs() {
     # 3. Turbo Boost / Deterministic Frequency
     local tb_val="Fixed / Locked"
     local tb_status="PASS"
-    if [ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]; then
+    if [ -f /sys/devices/system/cpu/amd_pstate/no_turbo ]; then
         local nt
-        nt="$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || echo "0")"
+        nt="$(cat /sys/devices/system/cpu/amd_pstate/no_turbo 2>/dev/null || echo "0")"
         if [ "$nt" = "1" ]; then
             tb_val="Disabled (Locked)"
             tb_status="PASS"
