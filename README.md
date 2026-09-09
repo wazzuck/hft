@@ -59,7 +59,6 @@ This project delivers a **cohesive 3-layer tuning strategy**:
 hft/
 ├── README.md                          # Master documentation & tuning manual
 ├── hft_tuning.sh                      # Main menu-driven tuning, benchmark & audit suite
-├── hft_ultra_tune.sh                  # Standalone zero-overhead tuning & benchmark script
 ├── install.sh                         # Base installer for tmux, git, and Antigravity CLI (agy)
 ├── recreate_simulation.sh             # One-shot script to destroy, rebuild, provision VM & run install.sh
 ├── setup_remote_server.sh             # Automated remote host deployment & toolchain installer
