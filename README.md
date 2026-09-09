@@ -92,23 +92,6 @@ With Linux **AF_XDP (eXpress Data Path)**:
 
 Before applying operating system tunings, configure the server's UEFI setup (via Dell iDRAC, HPE iLO, Supermicro IPMI, or console):
 
-| BIOS Setting | Recommended Value | Low-Latency Architectural Rationale |
-|---|---|---|
-| **Simultaneous Multi-Threading (SMT / HT)** | **Disabled** | SMT sibling threads share L1/L2 caches, execution ports, and store buffers. Disabling eliminates noisy-neighbor contention. |
-| **CPU Power and Performance Policy** | **Maximum Performance** | Forces internal power management hardware to maintain maximum uncore and core clock states. |
-| **Enhanced Intel SpeedStep (EIST)** | **Disabled** | Locks CPU clock to nominal max frequency; prevents P-state frequency downclocking. |
-| **Intel Speed Shift (HWP)** | **Disabled** | Prevents autonomous processor hardware frequency modulation. |
-| **CPU C-States (C1E, C3, C6, C7, C8)** | **Disabled (C0 only)** | Eliminates CPU idle power saving states. Prevents sleep-state exit latency spikes (10µs–150µs). |
-| **Intel Turbo Boost / AMD CPB** | **Disabled (Deterministic)** | While Turbo increases peak burst clock, it causes thermal throttling and clock jitter. Disabling guarantees fixed cycles per instruction. |
-| **Energy Performance Bias (EPB)** | **0 (Performance)** | Overrides BIOS power saving; biases CPU internal power balancing strictly to lowest latency. |
-| **NUMA Node Interleaving** | **Disabled (NUMA Active)** | **CRITICAL**: Enabling interleaving merges all memory into a single UMA pool, guaranteeing 50% remote memory accesses. Must remain Disabled. |
-| **Sub-NUMA Clustering (SNC)** | **Enabled (or NPS=4)** | Partitions LLC and memory channels into localized clusters, reducing local DRAM latency by ~10-15ns. |
-| **PCIe Active State Power Mgmt (ASPM)** | **Disabled** | Keeps PCIe links locked in the full-power L0 state, avoiding L0s/L1 resume delays when transmitting packets. |
-| **Intel VT-d / AMD-Vi (IOMMU)** | **Disabled** | Disables IOTLB memory address translation for PCIe DMA bursts (~50–100ns saved per packet). |
-| **Hardware Prefetchers (L2 / DCU)** | **Audited / Selective** | L2 streamer and DCU spatial prefetchers can pollute caches during sparse order book hash lookups. |
-
----
-
 ### 🎛 Deep-Dive: Supermicro BIOS Tuning Guide for AMD EPYC 9004 (e.g. AMD 9554P / H13 Motherboard)
 
 Modern ultra-low latency quantitative trading platforms frequently deploy single-socket **AMD EPYC 9554P** processors (Genoa, Zen 4, 64 physical cores, 128 threads, 256MB L3 cache, 12-channel DDR5-4800, 128 PCIe Gen 5 lanes) on **Supermicro H13** server motherboards (such as the `H13SSL-N`, `H13SSW`, `AS-1115CS-TNR`, or `AS-2115HS-TNR`) running Supermicro AMI Aptio V UEFI BIOS.
@@ -294,6 +277,28 @@ EOF_SUM
 # 3. Flash configuration to BIOS CMOS over out-of-band IPMI
 sum -i <bmc_ip> -u ADMIN -p <bmc_password> -c ChangeBiosCfg --file hft_epyc_bios.cfg --reboot
 ```
+
+
+---
+
+### 🎛 General & Intel-Specific BIOS Tuning Guide (e.g. Intel Xeon Scalable Sapphire Rapids / Emerald Rapids)
+
+For Intel-based hardware architectures (such as state-of-the-art **Intel Xeon Platinum 8490H** "Sapphire Rapids" or 5th Gen "Emerald Rapids"), apply the following configurations:
+
+| BIOS Setting | Recommended Value | Low-Latency Architectural Rationale |
+|---|---|---|
+| **Simultaneous Multi-Threading (SMT / HT)** | **Disabled** | SMT sibling threads share L1/L2 caches, execution ports, and store buffers. Disabling eliminates noisy-neighbor contention. |
+| **CPU Power and Performance Policy** | **Maximum Performance** | Forces internal power management hardware to maintain maximum uncore and core clock states. |
+| **Enhanced Intel SpeedStep (EIST)** | **Disabled** | Locks CPU clock to nominal max frequency; prevents P-state frequency downclocking. |
+| **Intel Speed Shift (HWP)** | **Disabled** | Prevents autonomous processor hardware frequency modulation. |
+| **CPU C-States (C1E, C3, C6, C7, C8)** | **Disabled (C0 only)** | Eliminates CPU idle power saving states. Prevents sleep-state exit latency spikes (10µs–150µs). |
+| **Intel Turbo Boost / AMD CPB** | **Disabled (Deterministic)** | While Turbo increases peak burst clock, it causes thermal throttling and clock jitter. Disabling guarantees fixed cycles per instruction. |
+| **Energy Performance Bias (EPB)** | **0 (Performance)** | Overrides BIOS power saving; biases CPU internal power balancing strictly to lowest latency. |
+| **NUMA Node Interleaving** | **Disabled (NUMA Active)** | **CRITICAL**: Enabling interleaving merges all memory into a single UMA pool, guaranteeing 50% remote memory accesses. Must remain Disabled. |
+| **Sub-NUMA Clustering (SNC)** | **Enabled (or NPS=4)** | Partitions LLC and memory channels into localized clusters, reducing local DRAM latency by ~10-15ns. |
+| **PCIe Active State Power Mgmt (ASPM)** | **Disabled** | Keeps PCIe links locked in the full-power L0 state, avoiding L0s/L1 resume delays when transmitting packets. |
+| **Intel VT-d / AMD-Vi (IOMMU)** | **Disabled** | Disables IOTLB memory address translation for PCIe DMA bursts (~50–100ns saved per packet). |
+| **Hardware Prefetchers (L2 / DCU)** | **Audited / Selective** | L2 streamer and DCU spatial prefetchers can pollute caches during sparse order book hash lookups. |
 
 ---
 
