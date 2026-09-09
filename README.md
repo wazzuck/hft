@@ -7,6 +7,17 @@ Built for **multi-NUMA bare-metal production servers**, physical **Intel 10Gbps 
 > [!NOTE]
 > **Why Intel NICs instead of FPGAs?** While tier-1 quantitative firms rely heavily on custom FPGAs (Field Programmable Gate Arrays) for sub-microsecond wire-to-wire execution, acquiring and licensing FPGA hardware requires massive institutional capital that is often inaccessible to independent developers or small prop shops. Therefore, this framework leverages **commodity Intel 10GbE NICs paired with Linux AF_XDP Zero-Copy**. This provides an affordable, software-defined architecture that perfectly mirrors the lock-free ring-buffer paradigms of an FPGA PCIe DMA engine, allowing you to develop and test ultra-low latency data pipelines on standard hardware.
 
+> [!NOTE]
+> **Hardware Testing Baseline & Production Deployment Architecture:**
+> All benchmarking, kernel isolation routines, and tuning validations in this repository were tested and verified on a **single-NUMA node AMD Threadripper platform**, selected specifically because it provides the **highest sustained clock frequencies available** for deterministic tick-to-trade execution.
+>
+> In institutional production colocation, large-scale multi-exchange trading and market data systems frequently deploy **high-frequency, multi-NUMA node server platforms**—such as:
+> - **AMD Ryzen Threadripper PRO 7000WX / 9000WX** (e.g., 7960X, 7975WX, 7985WX with 4/8-channel DDR5 and NPS2/NPS4 NUMA partitioning),
+> - **AMD EPYC F-Series (Frequency-Optimized)** (e.g., EPYC 9174F, 9374F, 9575F with 12 memory channels and up to 5.0 GHz boost), or
+> - **Intel Xeon 6 with P-Cores (Granite Rapids)** (utilizing Sub-NUMA Clustering SNC3/SNC4 with MRDIMMs).
+>
+> *\*Asterisk Notation on NUMA:* Throughout this document, any mention of multi-NUMA controls (such as `kernel.numa_balancing`, memory interleaving, or cross-socket NUMA node binding) marked with an asterisk (\*) is provided for enterprise multi-NUMA production servers and is **not required on high-frequency AMD Ryzen (or single-NUMA node Threadripper) architectures**, where all memory is routed uniformly through a single I/O Die (UMA).
+
 ---
 
 ## 📑 Table of Contents
@@ -33,20 +44,21 @@ In high-frequency trading, processing latency is measured in **nanoseconds**, no
 
 - **Dynamic CPU Frequency Scaling** causes 5µs–20µs clock ramps when bursting from idle.
 - **CPU Deep Sleep C-States** induce 10µs–150µs exit latency penalties when waking sleeping cores on packet arrival.
-- **CFS Scheduler Load Balancing** migrates threads between CPU cores and NUMA sockets, thrashing L1/L2/L3 caches.
+- **CFS Scheduler Load Balancing** migrates threads between CPU cores and NUMA sockets*, thrashing L1/L2/L3 caches.
 - **Kernel Network Stack (`sk_buff`)** copies buffers across kernel/user boundaries and suffers softirq scheduling overhead (~3µs–15µs per round-trip).
-- **Background Kernel Workers** (`khugepaged`, `vmstat_update`, `numabalancing`) freeze trading threads for milliseconds.
+- **Background Kernel Workers** (`khugepaged`, `vmstat_update`, `numabalancing`*) freeze trading threads for milliseconds.
 
 This project delivers a **cohesive 3-layer tuning strategy**:
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ Layer 1: Hardware & BIOS Firmware (SMT, C-States, Turbo, EPB, NUMA, ASPM)│
+│ Layer 1: Hardware & BIOS Firmware (SMT, C-States, Turbo, EPB, NUMA*, ASPM)│
 ├─────────────────────────────────────────────────────────────────────────┤
 │ Layer 2: Kernel Boot Arguments (isolcpus, nohz_full, rcu_nocbs, idle=poll)│
 ├─────────────────────────────────────────────────────────────────────────┤
 │ Layer 3: Runtime Kernel & OS (PM QoS 0µs, sysctl, IRQ Shielding, AF_XDP)│
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+*\*Asterisk Note: Multi-NUMA tuning applies when deploying to multi-socket / multi-node server platforms; it is not required on high-frequency single-NUMA AMD Ryzen architectures.*
 
 ---
 
@@ -78,12 +90,15 @@ hft/
 
 ## 🖥 Hardware & Network Architecture
 
-### 1. Multi-NUMA Memory Architecture
+### 1. Multi-NUMA Memory Architecture*
 In a dual-socket or multi-die architecture (e.g., Intel Xeon Scalable or AMD EPYC), each CPU socket contains its own integrated memory controller:
 - **Local Memory Access**: ~35–45 ns
 - **Remote NUMA Access (QPI/UPI Interconnect)**: ~85–120 ns (a 2.5x latency penalty!)
 
-Trading processes must be strictly pinned to the **specific NUMA node** where the trading NIC resides on the PCIe bus.
+Trading processes must be strictly pinned to the **specific NUMA node** where the trading NIC resides on the PCIe bus.*
+
+> [!NOTE]
+> **\*Ryzen / Single-NUMA Architecture Note:** Hardware multi-NUMA memory partitioning and cross-interconnect penalties apply to multi-socket or multi-channel enterprise server platforms (e.g., Threadripper PRO, EPYC, Xeon). On high-frequency AMD Ryzen architectures (and single-NUMA Threadripper), memory is routed through a single I/O die with uniform memory access (UMA); multi-NUMA binding is therefore not required.
 
 ### 2. Network Interface Architecture (Intel 10Gbps & FPGA Precursor)
 While proprietary NICs (like Solarflare Onload) require expensive custom silicon, **Intel 10Gbps NICs** (Intel 82599ES, X520, X540, X550, X710) are the industry-standard commodity baseline.
@@ -101,6 +116,9 @@ Before applying operating system tunings, configure the system's UEFI setup (via
 
 > [!TIP]
 > **Architectural Rationale:** The deliberate deployment of a dedicated execution processor like the 9950X for low latency high frequency trading over a massive 128-core server processor is driven by its **superior single-thread clock scaling (up to 5.7 GHz)**. In quantitative trading and market making, maximizing **single-thread tick-to-trade determinism** for the critical-path order execution gateway is exponentially more valuable than having massive core counts designed for aggregate multi-tenant throughput.
+
+> [!NOTE]
+> **\*BIOS NUMA Note:** Dedicated multi-NUMA BIOS options (such as NUMA Nodes Per Socket `NPS1/NPS2/NPS4` or Sub-NUMA Clustering `SNC`) are only present on multi-node enterprise platforms (AMD EPYC, Threadripper PRO, Intel Xeon). On high-frequency AMD Ryzen platforms, memory operates as a single uniform access domain (UMA), so no NUMA partitioning configuration is required in BIOS.
 
 Due to the modular dual-CCD architecture (2 Core Complex Dies interconnected via the Infinity Fabric), factory BIOS settings can cause cross-die latency penalties and clock-frequency jitter. Follow this tuning guide to achieve deterministic execution.
 
@@ -401,13 +419,16 @@ These 10 configurations are applied at runtime by [`hft_tuning.sh`](file:///home
 | **1** | **CPU Scaling Governor** | `cpupower frequency-set -g performance`<br>`scaling_min_freq = scaling_max_freq` | Eliminates frequency transition delays |
 | **2** | **PM QoS C-State Elimination** | `/dev/cpu_dma_latency = 0` (Background Lock) | Locks core in C0 |
 | **3** | **CFS Task Migration Cost** | `/sys/kernel/debug/sched/migration_cost_ns = 5,000,000 ns` (5ms) | Prevents thread thrashing / migration |
-| **4** | **Automatic NUMA Balancing** | `sysctl kernel.numa_balancing = 0` | Stops background page scanning thread |
+| **4** | **Automatic NUMA Balancing\*** | `sysctl kernel.numa_balancing = 0` | Stops background page scanning thread |
 | **5** | **Virtual Memory Swappiness** | `sysctl vm.swappiness = 0` | Strictly forbids memory paging |
 | **6** | **VM Stat Timer Interruption** | `sysctl vm.stat_interval = 120` | Suppresses 1 Hz timer tick interrupts |
 | **7** | **Transparent Hugepages (THP)** | `transparent_hugepage/enabled = never`<br>`transparent_hugepage/defrag = never` | Eliminates runtime compaction stalls |
 | **8** | **Socket Busy-Polling & NIC Ring**| `sysctl net.core.busy_poll = 50`<br>`ethtool -G rx 4096 tx 4096` | Eliminates interrupt sleep; spins on ring |
 | **9** | **TCP Slow Start After Idle** | `sysctl net.ipv4.tcp_slow_start_after_idle = 0` | Immediate line-rate burst after silence |
 | **10**| **IRQ Shielding & Core Pinning** | `systemctl stop irqbalance`<br>`default_smp_affinity = 1` (Core 0) | Shields trading core from hardware IRQs |
+
+> [!NOTE]
+> **\*Note on Automatic NUMA Balancing:** On enterprise multi-NUMA server platforms, disabling NUMA balancing stops background thread page migration stalls across sockets. On high-frequency single-NUMA AMD Ryzen architectures, this is not strictly required as memory access is already uniform (UMA), though retaining the setting remains recommended practice to eliminate background kernel scanning threads.
 
 ---
 
@@ -504,7 +525,7 @@ public:
 ```
 
 #### 2. AF_XDP Zero-Copy Ingestion Loop
-The Producer pins itself to the NIC's NUMA node, polls the AF_XDP Rx ring, and pushes normalized structures directly to the SPSC queue:
+The Producer pins itself to the NIC's NUMA node*, polls the AF_XDP Rx ring, and pushes normalized structures directly to the SPSC queue (*on multi-NUMA server platforms; on single-NUMA Ryzen architectures, any isolated core on the local CCD is used):
 
 ```cpp
 LockFreeSPSC<MarketTick, 4096> market_data_queue;
@@ -602,7 +623,7 @@ Audits active sysctls, `/sys` files, and background daemons:
 │ 1  │ CPU Scaling Governor            │ performance        │ Hypervisor Managed │ INFO     │
 │ 2  │ PM QoS C-State Elimination      │ 0us lock active    │ active (0us lock)  │ PASS     │
 │ 3  │ CFS Task Migration Cost         │ 5000000 ns (5ms)   │ 5000000 ns         │ PASS     │
-│ 4  │ Automatic NUMA Balancing        │ 0 (disabled)       │ 0                  │ PASS     │
+│ 4  │ Automatic NUMA Balancing*       │ 0 (disabled)       │ 0                  │ PASS     │
 │ 5  │ Virtual Memory Swappiness       │ 0 (disabled)       │ 0                  │ PASS     │
 │ 6  │ VM Stat Timer Interval          │ 120 seconds        │ 120 seconds        │ PASS     │
 │ 7  │ Transparent Hugepages (THP)     │ never (disabled)   │ never              │ PASS     │
@@ -635,7 +656,7 @@ Extracts DMI/SMBIOS platform metadata and verifies low-level hardware configurat
 │ 2  │ CPU C-States / Deep Sleep       │ Disabled (C0 only) │ Disabled (C0 only) │ PASS     │
 │ 3  │ Turbo Boost / CPB Jitter        │ Disabled / Locked  │ Fixed / Locked     │ PASS     │
 │ 4  │ Energy Perf Bias (EPB)          │ 0 (Performance)    │ 0 (Performance)    │ PASS     │
-│ 5  │ NUMA Node Interleaving          │ Disabled (NUMA ON) │ 2N / 2S (OK)       │ PASS     │
+│ 5  │ NUMA Node Interleaving*         │ Disabled (NUMA ON) │ 2N / 2S (OK)       │ PASS     │
 │ 6  │ PCIe ASPM Link States           │ performance / off  │ performance        │ PASS     │
 │ 7  │ Hardware Prefetchers            │ Audit (MSR 0x1A4)  │ All Off (0xF)      │ PASS     │
 │ 8  │ IOMMU / VT-d Virtualization     │ Disabled / Bypass  │ Disabled / Bypass  │ PASS     │
@@ -643,6 +664,7 @@ Extracts DMI/SMBIOS platform metadata and verifies low-level hardware configurat
 │ 10 │ Hardware Invariant TSC          │ constant+nonstop   │ constant+nonstop   │ PASS     │
 └────┴─────────────────────────────────┴────────────────────┴────────────────────┴──────────┘
 ```
+*\*Asterisk Note: Multi-NUMA checks apply to multi-node server platforms (e.g. Threadripper PRO, EPYC, Xeon). On high-frequency single-NUMA AMD Ryzen architectures (which report 1 Node / UMA), multi-NUMA controls and interleaving checks are not required.*
 
 ### Part 4: Reboot Persistence & Auto-Restoration Engine
 Verifies whether system configurations are guaranteed to survive a reboot:
