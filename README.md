@@ -568,14 +568,32 @@ cd simulation
 ```
 
 ### ⚡ One-Shot Simulation Recreation & Automated Provisioning (`recreate_simulation.sh`)
-To completely tear down the active VM, rebuild a clean AlmaLinux instance, provision toolchains and SSH keys, clone the repository, and run `install.sh` (installing `tmux`, `git`, and the `agy` CLI):
+
+For a completely automated, zero-touch tear-down and rebuild of the AlmaLinux simulation environment, use [`recreate_simulation.sh`](file:///home/neville/hft/recreate_simulation.sh). It chains the entire lifecycle into a single pipeline:
+
 ```bash
-# Interactive mode (prompts before teardown):
+# Interactive mode (prompts for confirmation before destroying):
 ./recreate_simulation.sh
 
-# Headless / CI automated mode:
+# Headless / Unattended mode (auto-confirms teardown):
 ./recreate_simulation.sh -y
 ```
+
+#### What the Recreate Pipeline Automates:
+1. **VM Teardown**: Calls `setup_simulation.sh destroy` to terminate `hft-alma`, undefine the domain, and erase the temporary copy-on-write disk overlay.
+2. **Pristine Rebuild**: Calls `setup_simulation.sh create` to spin up a fresh AlmaLinux 9 VM from base image with host CPU/cache passthrough and cloud-init SSH injection.
+3. **Remote Server Toolchain Provisioning**: Runs [`setup_remote_server.sh`](file:///home/neville/hft/setup_remote_server.sh) to:
+   - Synchronize local SSH credentials so the VM can pull from private Git repositories.
+   - Enable AlmaLinux CRB (CodeReady Linux Builder) and EPEL package repositories.
+   - Install C/C++ compiler toolchains (`gcc`, `g++`, `make`, `cmake`), low-latency kernel bypass packages (`libxdp`, `libbpf`), and profiling tools (`perf`, `numactl`, `cyclictest`).
+   - Authenticate with GitHub and clone `git@github.com:wazzuck/hft.git` to `~/hft`.
+4. **Environment Setup & AGY CLI Installation**: Connects to the VM over SSH and executes [`install.sh`](file:///home/neville/hft/install.sh):
+   - Installs `tmux`, `git`, `curl`, and `ca-certificates`.
+   - Downloads and installs the **Google Antigravity CLI (`agy`)** via its official bootstrapper.
+   - Configures `PATH` persistence in `~/.bashrc`.
+5. **Post-Setup Health Verification**: Validates operating system version, `git`, `tmux`, and `agy` installation on the VM, confirming it is ready for low-latency tuning experiments.
+
+---
 
 ### Simulation Specifics
 - **OS**: AlmaLinux 9 (GenericCloud QCOW2 image)

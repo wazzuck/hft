@@ -21,6 +21,9 @@
 
 set -euo pipefail
 
+# Ensure libvirt connects to system daemon
+export LIBVIRT_DEFAULT_URI="qemu:///system"
+
 # ------------------------------------------------------------------------------
 # 1. VISUAL FORMATTING & COLOR PALETTE
 # ------------------------------------------------------------------------------
