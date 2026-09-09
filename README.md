@@ -209,31 +209,24 @@ isolcpus=managed_irq,domain,1-15 nohz_full=1-15 rcu_nocbs=1-15 rcu_nocb_poll cpu
 
 ### Parameter Breakdown
 
-```
-Core Shielding:
-  ├── isolcpus=managed_irq,domain,1-15 : Removes isolated cores from the CFS scheduler balancing domain.
-  ├── nohz_full=1-15                   : Disables the 1000 Hz kernel scheduler tick on cores with 1 runnable task.
-  ├── rcu_nocbs=1-15                   : Offloads RCU garbage collection callbacks away from trading cores to Core 0.
-  └── rcu_nocb_poll                    : Puts RCU offload kthreads into polling mode (eliminates timer IPI interrupts).
-
-Power & C-State Elimination:
-  ├── cpuidle.off=1          : Hard-disables the generic cpuidle framework.
-  ├── processor.max_cstate=0           : Clamps ACPI processor power states strictly to C0 (Active execution).
-  ├── idle=poll                        : Replaces CPU halt instructions with a 0ns busy-wait polling loop.
-  └── amd_pstate=disable             : Disables autonomous hardware P-state scaling.
-
-Hardware Determinism:
-  ├── clocksource=tsc                  : Enforces the direct CPU Time Stamp Counter as the system clock.
-  ├── tsc=reliable                     : Disables clocksource verification watchdogs that periodically disrupt TSC.
-  ├── nosmt                            : Disables hyperthreading at the kernel entry point.
-  ├── transparent_hugepage=never       : Prevents memory allocation freezing during runtime compaction.
-  ├── default_hugepagesz=1G            : Pre-allocates static 1GB hugepages at boot time.
-  ├── pcie_aspm=off                    : Forces all PCIe interconnects to stay locked in L0 active power mode.
-  ├── audit=0                          : Strips kernel system call audit logging (~30ns saved per syscall).
-  └── mitigations=off                  : Disables speculative execution barriers (Meltdown, Spectre, MDS, L1TF).
-```
-
-```
+| Category | Boot Parameter | Functional Goal / Description |
+| :--- | :--- | :--- |
+| **Core Shielding** | `isolcpus=managed_irq,domain,1-15` | Removes isolated cores from the CFS scheduler balancing domain. |
+| **Core Shielding** | `nohz_full=1-15` | Disables the 1000 Hz kernel scheduler tick on cores with 1 runnable task. |
+| **Core Shielding** | `rcu_nocbs=1-15` | Offloads RCU garbage collection callbacks away from trading cores to Core 0. |
+| **Core Shielding** | `rcu_nocb_poll` | Puts RCU offload kthreads into polling mode (eliminates timer IPI interrupts). |
+| **Power & C-State** | `cpuidle.off=1` | Hard-disables the generic cpuidle framework. |
+| **Power & C-State** | `processor.max_cstate=0` | Clamps ACPI processor power states strictly to C0 (Active execution). |
+| **Power & C-State** | `idle=poll` | Replaces CPU halt instructions with a 0ns busy-wait polling loop. |
+| **Power & C-State** | `amd_pstate=disable` | Disables autonomous hardware P-state scaling. |
+| **Hardware Determinism** | `clocksource=tsc` | Enforces the direct CPU Time Stamp Counter as the system clock. |
+| **Hardware Determinism** | `tsc=reliable` | Disables clocksource verification watchdogs that periodically disrupt TSC. |
+| **Hardware Determinism** | `nosmt` | Disables hyperthreading at the kernel entry point. |
+| **Hardware Determinism** | `transparent_hugepage=never` | Prevents memory allocation freezing during runtime compaction. |
+| **Hardware Determinism** | `default_hugepagesz=1G` | Pre-allocates static 1GB hugepages at boot time. |
+| **Hardware Determinism** | `pcie_aspm=off` | Forces all PCIe interconnects to stay locked in L0 active power mode. |
+| **Hardware Determinism** | `audit=0` | Strips kernel system call audit logging (~30ns saved per syscall). |
+| **Hardware Determinism** | `mitigations=off` | Disables speculative execution barriers (Meltdown, Spectre, MDS, L1TF). |
 
 ### Applying Boot Parameters & The Reboot Prompt
 
@@ -364,31 +357,18 @@ cd simulation
 
 These 10 configurations are applied at runtime by [`hft_tuning.sh`](file:///home/neville/hft/hft_tuning.sh#L800-L895) without requiring a system reboot:
 
-```text
-┌────┬─────────────────────────────────┬───────────────────────────────────────────┬──────────────────────┐
-│ #  │ TUNING SUBSYSTEM                │ RUNTIME COMMAND                           │ HFT LATENCY IMPACT   │
-├────┼─────────────────────────────────┼───────────────────────────────────────────┼──────────────────────┤
-│ 1  │ CPU Scaling Governor            │ cpupower frequency-set -g performance     │ Eliminates frequency │
-│    │                                 │ scaling_min_freq = scaling_max_freq       │ transition delays    │
-│ 2  │ PM QoS C-State Elimination      │ /dev/cpu_dma_latency = 0 (Background Lock)│ Locks core in C0     │
-│ 3  │ CFS Task Migration Cost         │ /sys/kernel/debug/sched/migration_cost_ns │ Prevents thread      │
-│    │                                 │ = 5,000,000 ns (5ms)                      │ thrashing / migration│
-│ 4  │ Automatic NUMA Balancing        │ sysctl kernel.numa_balancing = 0          │ Stops background page│
-│    │                                 │                                           │ scanning thread      │
-│ 5  │ Virtual Memory Swappiness       │ sysctl vm.swappiness = 0                  │ Strictly forbids     │
-│    │                                 │                                           │ memory paging        │
-│ 6  │ VM Stat Timer Interruption      │ sysctl vm.stat_interval = 120             │ Suppresses 1 Hz      │
-│    │                                 │                                           │ timer tick interrupts│
-│ 7  │ Transparent Hugepages (THP)     │ transparent_hugepage/enabled = never      │ Eliminates runtime   │
-│    │                                 │ transparent_hugepage/defrag = never       │ compaction stalls    │
-│ 8  │ Socket Busy-Polling & NIC Ring  │ sysctl net.core.busy_poll = 50            │ Eliminates interrupt │
-│    │                                 │ ethtool -G rx 4096 tx 4096                │ sleep; spins on ring │
-│ 9  │ TCP Slow Start After Idle       │ sysctl net.ipv4.tcp_slow_start_after_idle │ Immediate line-rate  │
-│    │                                 │ = 0                                       │ burst after silence  │
-│ 10 │ IRQ Shielding & Core Pinning    │ systemctl stop irqbalance                 │ Shields trading core │
-│    │                                 │ default_smp_affinity = 1 (Core 0)         │ from hardware IRQs   │
-└────┴─────────────────────────────────┴───────────────────────────────────────────┴──────────────────────┘
-```
+| # | Tuning Subsystem | Runtime Command | HFT Latency Impact |
+| :--- | :--- | :--- | :--- |
+| **1** | **CPU Scaling Governor** | `cpupower frequency-set -g performance`<br>`scaling_min_freq = scaling_max_freq` | Eliminates frequency transition delays |
+| **2** | **PM QoS C-State Elimination** | `/dev/cpu_dma_latency = 0` (Background Lock) | Locks core in C0 |
+| **3** | **CFS Task Migration Cost** | `/sys/kernel/debug/sched/migration_cost_ns = 5,000,000 ns` (5ms) | Prevents thread thrashing / migration |
+| **4** | **Automatic NUMA Balancing** | `sysctl kernel.numa_balancing = 0` | Stops background page scanning thread |
+| **5** | **Virtual Memory Swappiness** | `sysctl vm.swappiness = 0` | Strictly forbids memory paging |
+| **6** | **VM Stat Timer Interruption** | `sysctl vm.stat_interval = 120` | Suppresses 1 Hz timer tick interrupts |
+| **7** | **Transparent Hugepages (THP)** | `transparent_hugepage/enabled = never`<br>`transparent_hugepage/defrag = never` | Eliminates runtime compaction stalls |
+| **8** | **Socket Busy-Polling & NIC Ring**| `sysctl net.core.busy_poll = 50`<br>`ethtool -G rx 4096 tx 4096` | Eliminates interrupt sleep; spins on ring |
+| **9** | **TCP Slow Start After Idle** | `sysctl net.ipv4.tcp_slow_start_after_idle = 0` | Immediate line-rate burst after silence |
+| **10**| **IRQ Shielding & Core Pinning** | `systemctl stop irqbalance`<br>`default_smp_affinity = 1` (Core 0) | Shields trading core from hardware IRQs |
 
 ---
 
