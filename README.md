@@ -92,190 +92,100 @@ With Linux **AF_XDP (eXpress Data Path)**:
 
 Before applying operating system tunings, configure the server's UEFI setup (via Dell iDRAC, HPE iLO, Supermicro IPMI, or console):
 
-### 🎛 Deep-Dive: Supermicro BIOS Tuning Guide for AMD EPYC 9004 (e.g. AMD 9554P / H13 Motherboard)
+### 🎛 Deep-Dive: Enthusiast BIOS Tuning Guide for AMD Ryzen 9000 (e.g. AMD Ryzen 9 9950X / X870E Motherboard)
 
-Modern ultra-low latency quantitative trading platforms frequently deploy single-socket **AMD EPYC 9554P** processors (Genoa, Zen 4, 64 physical cores, 128 threads, 256MB L3 cache, 12-channel DDR5-4800, 128 PCIe Gen 5 lanes) on **Supermicro H13** server motherboards (such as the `H13SSL-N`, `H13SSW`, `AS-1115CS-TNR`, or `AS-2115HS-TNR`) running Supermicro AMI Aptio V UEFI BIOS.
+Modern ultra-low latency setups often leverage enthusiast hardware like the **AMD Ryzen 9 9950X** processor (Zen 5, 16 physical cores, 32 threads, 64MB L3 cache, up to 5.7 GHz) on **X670E or X870E** enthusiast motherboards (from vendors like ASUS ROG, MSI, or Gigabyte) running standard AMI UEFI BIOS.
 
-Due to the modular multi-die architecture (8 Core Complex Dies / CCDs interconnected with a central I/O Die / IOD via AMD Infinity Fabric), default factory BIOS settings cause severe cross-die latency penalties, memory bus collisions, and clock-frequency jitter. Follow this authoritative step-by-step tuning guide to achieve deterministic, sub-microsecond execution.
+Due to the modular dual-CCD architecture (2 Core Complex Dies interconnected via the Infinity Fabric), factory BIOS settings can cause cross-die latency penalties and clock-frequency jitter. Follow this tuning guide to achieve deterministic execution.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ AMD EPYC 9554P TOPOLOGY & QUADRANT MAPPING (1 Socket, 64 Physical Cores)     │
+│ AMD RYZEN 9 9950X TOPOLOGY (1 Socket, 16 Physical Cores)                     │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│   QUADRANT 0 (NUMA Node 0)                 QUADRANT 1 (NUMA Node 1)          │
-│   ┌───────────────┐ ┌───────────────┐      ┌───────────────┐ ┌─────────────┐ │
-│   │ CCD 0 (8 Cores│ │ CCD 1 (8 Cores│      │ CCD 2 (8 Cores│ │CCD 3(8 Cores│ │
-│   │  32MB L3)     │ │  32MB L3)     │      │  32MB L3)     │ │ 32MB L3)    │ │
-│   └───────┬───────┘ └───────┬───────┘      └───────┬───────┘ └─────┬───────┘ │
-│           │ Channels A, B, C│                      │Channels D, E, F│        │
-│   ════════╪═════════════════╪══════════════════════╪═══════════════╪══════   │
+│   ┌───────────────┐ ┌───────────────┐                                        │
+│   │ CCD 0 (8 Cores│ │ CCD 1 (8 Cores│                                        │
+│   │  32MB L3)     │ │  32MB L3)     │                                        │
+│   └───────┬───────┘ └───────┬───────┘                                        │
+│           │                 │                                                │
+│   ════════╪═════════════════╪═════════════════════════════════════════════   │
 │           │       CENTRAL I/O DIE (IOD) & INFINITY FABRIC DATA FABRIC        │
-│   ════════╪═════════════════╪══════════════════════╪═══════════════╪══════   │
-│           │ Channels G, H, I│                      │Channels J, K, L│        │
-│   ┌───────┴───────┐ ┌───────┴───────┐      ┌───────┴───────┐ ┌─────┴───────┐ │
-│   │ CCD 4 (8 Cores│ │ CCD 5 (8 Cores│      │ CCD 6 (8 Cores│ │CCD 7(8 Cores│ │
-│   │  32MB L3)     │ │  32MB L3)     │      │  32MB L3)     │ │ 32MB L3)    │ │
-│   └───────────────┘ └───────────────┘      └───────────────┘ └─────────────┘ │
-│   QUADRANT 2 (NUMA Node 2)                 QUADRANT 3 (NUMA Node 3)          │
-│                                                                              │
-│   * Under NPS1: All memory interleaved -> 75% of DRAM reads cross the IOD!   │
-│   * Under NPS4: Memory is isolated into 4 local NUMA nodes -> 0 cross hops!  │
+│   ════════╪═════════════════╪═════════════════════════════════════════════   │
+│           │                 │                                                │
+│   * Threads should be pinned within a single CCD (e.g. cores 0-7) to avoid   │
+│     costly cross-die L3 cache misses over the Infinity Fabric.               │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### 1. Accessing Supermicro BIOS Setup
-1. **Via Out-of-Band IPMI Web GUI**:
-   - Navigate to the Supermicro BMC IP (`https://<bmc_ip>`).
-   - Launch **Remote Control** → **iKVM/HTML5** virtual console.
-   - Power cycle or reboot the server.
-2. **Keyboard Entry**:
-   - During the early Power-On Self-Test (POST) memory training screen, repeatedly press `<DEL>` or `<F2>` until the AMI Aptio V Setup Utility launches.
+#### 1. Accessing Enthusiast BIOS Setup
+1. Reboot the server.
+2. During the early Power-On Self-Test (POST) screen, repeatedly press `<DEL>` or `<F2>` until the UEFI BIOS Utility launches.
+3. Switch to **Advanced Mode** (usually `F7`).
 
 ---
 
-#### 2. Step-by-Step Low-Latency Supermicro BIOS Configuration
+#### 2. Step-by-Step Low-Latency BIOS Configuration
 
-##### A. Power, Thermal & VRM Management (`Advanced` → `Supermicro Server Management` / `Chipset`)
-| Supermicro BIOS Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
+##### A. CPU Core Isolation & Multithreading (`Advanced` → `CPU Configuration`)
+| BIOS Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
 | :--- | :--- | :--- | :--- |
-| `Advanced` → `Configure Server Power Policy` | **Power Technology** | **Custom** | Enables granular access to individual power domains. |
-| `Advanced` → `Configure Server Power Policy` | **Power Performance Policy** | **High Performance** | Locks VRM switching frequencies, suppresses power-phase shedding, and minimizes voltage transient response time. |
-| `Advanced` → `IPMI / Server Health` | **Fan Speed Control Mode** | **Full Speed (100%)** | **CRITICAL**: Dynamic fan curves ramp up *after* temperature spikes. Running fans at 100% keeps the 360W 9554P below 45°C, preventing thermal throttling jitter and maintaining constant PCIe copper trace impedance. |
+| `Advanced` → `CPU Configuration` | **SMT Control** | **Disable** | Disables Simultaneous Multi-Threading. SMT sibling threads compete for L1/L2 caches and execution ALUs. Disabling provides 16 dedicated physical cores with zero noisy-neighbor stalls. |
 
-##### B. CPU Core Isolation & Multithreading (`Advanced` → `CPU Configuration`)
-| Supermicro BIOS Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
+##### B. AMD CBS → CPU Common Options (Sleep States & Clocks)
+| BIOS Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
 | :--- | :--- | :--- | :--- |
-| `Advanced` → `CPU Configuration` | **SMT Control** | **Disable** | Disables Simultaneous Multi-Threading. SMT sibling threads compete for L1 instruction/data caches (32KB), execution ALUs, and store buffers. Disabling SMT provides 64 dedicated physical cores with zero noisy-neighbor stalls. |
+| `Advanced` → `AMD CBS` → `CPU Common Options` | **Core Performance Boost (CPB)** | **Disabled** | CPB boosts clocks opportunistically, but the dynamic voltage/frequency transitions cause phase-locked loop (PLL) relocking jitter. Disabling locks cores to a deterministic base frequency. |
+| `Advanced` → `AMD CBS` → `CPU Common Options` | **Global C-state Control** | **Disabled** | Hard-disables C1, C1E, and C2 sleep states in hardware. Zen cores never enter sleep modes, maintaining 100% C0 execution readiness. |
+| `Advanced` → `AMD CBS` → `CPU Common Options` | **Streaming Stores Control** | **Enabled** | Accelerates non-temporal store instructions to write directly to DRAM. |
 
-##### C. AMD CBS → CPU Common Options (Sleep States, Clocks & Prefetchers)
-| Supermicro BIOS Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
+##### C. Extreme Tweaker / Overclocking (Infinity Fabric & Memory)
+| BIOS Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
 | :--- | :--- | :--- | :--- |
-| `Advanced` → `AMD CBS` → `CPU Common Options` | **Core Performance Boost (CPB)** | **Disabled** | CPB boosts clocks opportunistically up to 3.75 GHz, but the dynamic voltage/frequency transitions cause 10µs–30µs phase-locked loop (PLL) relocking jitter. Disabling CPB locks all 64 cores to a deterministic, jitter-free base frequency (3.10 GHz). |
-| `Advanced` → `AMD CBS` → `CPU Common Options` | **Global C-state Control** | **Disabled** | Hard-disables C1, C1E, and C2 sleep states in hardware. Zen 4 cores never enter sleep modes, maintaining 100% C0 execution readiness with **0ns** wakeup latency. |
-| `Advanced` → `AMD CBS` → `CPU Common Options` | **C-state Efficiency Mode** | **Disabled** | Disables autonomous microcode energy-saving throttling. |
-| `Advanced` → `AMD CBS` → `CPU Common Options` | **Streaming Stores Control** | **Enabled** | Accelerates non-temporal store instructions (e.g. `_mm_stream_si128` / AVX-512) to write directly to DRAM ring buffers, bypassing the cache hierarchy. |
-| `Advanced` → `AMD CBS` → `CPU Common Options` → `Prefetcher settings` | **L1 Stream HW Prefetcher** | **Disabled** | Disables sequential cache-line prefetching into L1. Prevents cache pollution during sparse order book hash map lookups. |
-| `Advanced` → `AMD CBS` → `CPU Common Options` → `Prefetcher settings` | **L1 Stride Prefetcher** | **Disabled** | Disables constant-stride prefetching into L1. |
-| `Advanced` → `AMD CBS` → `CPU Common Options` → `Prefetcher settings` | **L2 Stream HW Prefetcher** | **Disabled** | Prevents speculative sequential prefetching into L2 cache from flooding the internal Infinity Fabric bus. |
-| `Advanced` → `AMD CBS` → `CPU Common Options` → `Prefetcher settings` | **L2 Up/Down Prefetcher** | **Disabled** | Disables directional prefetching based on instruction pointer history. |
+| `Extreme Tweaker` / `OC` | **FCLK Frequency** | **Match MCLK (e.g. 2000MHz)** | The Infinity Fabric Clock (FCLK) must run at a 1:1 ratio with the Memory Clock (MCLK). For DDR5-6000, MCLK is 3000MHz, FCLK should be matched tightly (typically maxing around 2000-2200MHz for Zen 5). |
+| `Extreme Tweaker` / `OC` | **UCLK DIV1 MODE** | **UCLK=MEMCLK** | Forces the Unified Memory Controller Clock to run at the same speed as the memory clock, preventing gear-down latency penalties. |
 
-##### D. AMD CBS → DF (Data Fabric) & Memory Topology (NUMA NPS4)
-| Supermicro BIOS Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
+##### D. PCIe / Bus Subsystem & IOMMU (`Advanced` → `PCIe/PCI/PnP` & `AMD CBS` → `NBIO`)
+| BIOS Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
 | :--- | :--- | :--- | :--- |
-| `Advanced` → `AMD CBS` → `DF Common Options` → `Memory Addressing` | **NUMA nodes per socket (NPS)** | **NPS4** | **CRITICAL**: Partitions the 64-core 9554P into 4 distinct NUMA domains (Nodes 0, 1, 2, 3), with 16 cores (2 CCDs) mapped directly to 3 local DDR5 memory channels. Eliminates cross-die Infinity Fabric traversals, shaving **18ns–25ns** off memory access! |
-| `Advanced` → `AMD CBS` → `DF Common Options` → `Memory Addressing` | **Memory interleaving** | **Disabled** | Disables cross-quadrant DRAM interleaving. Memory addresses remain strictly bound within the local quadrant. |
-| `Advanced` → `AMD CBS` → `DF Common Options` | **ACPI SRAT L3 NUMA** | **Enabled** | Exposes each of the 8 CCDs (and their local 32MB L3 slices) as an ACPI SRAT proximity domain, enabling thread affinity binding directly to the local L3 cache slice. |
-| `Advanced` → `AMD CBS` → `DF Common Options` | **Determinism Slider** | **Performance Determinism** | Forces the processor power control unit (PCU) to maintain identical, cycle-accurate performance across all cores, eliminating clock frequency dips during heavy AVX-512 tick workloads. |
-| `Advanced` → `AMD CBS` → `DF Common Options` | **xGMI Link Configuration** | **Force P0 / Max** | Disables link power management across the Data Fabric, locking internal buses to full bandwidth. |
-
-##### E. AMD CBS → UMC Common Options (DRAM Timing & Patrol Scrub)
-| Supermicro BIOS Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
-| :--- | :--- | :--- | :--- |
-| `Advanced` → `AMD CBS` → `UMC Common Options` → `DDR Memory ECC` | **Patrol Scrub** | **Disabled** | **CRITICAL**: Patrol scrubbing sequentially reads memory blocks to detect ECC errors. When an autonomous scrub cycle collides with market quote ingress, memory access is blocked, causing an unpredictable tail latency spike of **500ns–1.5µs**. Disable during trading hours. |
-| `Advanced` → `AMD CBS` → `UMC Common Options` → `DDR Memory ECC` | **Data Poisoning** | **Enabled** | Allows hardware ECC error isolation without halting healthy cores. |
-
-##### F. PCIe / Bus Subsystem & IOMMU (`Advanced` → `PCIe/PCI/PnP` & `AMD CBS` → `NBIO`)
-| Supermicro BIOS Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
-| :--- | :--- | :--- | :--- |
-| `Advanced` → `PCIe/PCI/PnP Configuration` | **PCIe ASPM Support** | **Disabled** | Keeps PCIe lanes connected to Intel 10GbE NICs and FPGAs locked in active L0 power state, eliminating 5µs–25µs link wakeup delays. |
-| `Advanced` → `AMD CBS` → `NBIO Common Options` | **IOMMU (AMD-Vi)** | **Disabled** | Bare-metal HFT kernels bypass virtualization. Disabling AMD-Vi strips away IOTLB page table lookups on packet DMA bursts, saving **40ns–80ns** per packet. |
-| `Advanced` → `PCIe/PCI/PnP Configuration` | **Above 4G Decoding** | **Enabled** | Permits 64-bit BAR memory mapping for FPGA/NIC DMA ring buffers. |
-| `Advanced` → `PCIe/PCI/PnP Configuration` | **Re-Size BAR Support** | **Enabled** | Allows trading software to map large multi-gigabyte FPGA/NIC buffers directly into user-space virtual memory. |
-| `Advanced` → `AMD CBS` → `NBIO Common Options` | **ACS (Access Control Services)** | **Disabled** | Disabling ACS allows direct **Peer-to-Peer (P2P) PCIe DMA** between network interface cards and FPGAs/GPUs without bouncing transactions through host DRAM. |
-
-##### G. SMI (System Management Interrupt) Suppression
-| Supermicro BIOS Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
-| :--- | :--- | :--- | :--- |
-| `Advanced` → `USB Configuration` | **Legacy USB Support** | **Disabled (or Setup Only)** | Prevents legacy USB emulation hooks from triggering SMI interrupts (which pause the entire CPU for 50µs–300µs). |
-| `Advanced` → `Serial Port Console Redirection` | **Console Redirection** | **Disabled (Post-Boot)** | Prevents serial UART controller interrupts from triggering periodic SMI polling during runtime. |
+| `Advanced` → `PCIe Subsystem Settings` | **PCIe ASPM Support** | **Disabled** | Keeps PCIe lanes locked in active L0 power state, eliminating link wakeup delays for NICs. |
+| `Advanced` → `AMD CBS` → `NBIO Common Options` | **IOMMU** | **Disabled** | Bare-metal HFT kernels bypass virtualization. Disabling strips away IOTLB page table lookups on packet DMA bursts. |
+| `Advanced` → `PCIe Subsystem Settings` | **Above 4G Decoding** | **Enabled** | Permits 64-bit BAR memory mapping. |
+| `Advanced` → `PCIe Subsystem Settings` | **Re-Size BAR Support** | **Enabled** | Allows mapping large multi-gigabyte NIC buffers directly into user-space. |
 
 ---
 
 #### 3. Saving & Exiting BIOS Setup
-Press `<F4>` (**Save & Exit**), select **Save Changes and Reset**, and press `<Enter>`.
+Press `<F10>` (**Save & Exit**), select **Save Changes and Reset**, and press `<Enter>`.
 
 ---
 
-#### 4. Post-Boot Linux Verification Commands for AMD EPYC 9554P
+#### 4. Post-Boot Linux Verification Commands for AMD Ryzen 9 9950X
 Verify your hardware configuration inside Linux:
 
 ```bash
-# 1. Verify SMT is Disabled (64 physical cores, 1 thread per core)
+# 1. Verify SMT is Disabled (16 physical cores, 1 thread per core)
 lscpu | grep -E "Thread\(s\) per core|Core\(s\) per socket|Socket\(s\)"
 # Expected Output:
 # Thread(s) per core:  1
-# Core(s) per socket:  64
+# Core(s) per socket:  16
 # Socket(s):           1
 
-# 2. Verify NPS4 NUMA Partitioning (4 nodes, 16 CPUs per node)
-numactl -H
-# Expected Output:
-# available: 4 nodes (0-3)
-# node 0 cpus: 0-15
-# node 1 cpus: 16-31
-# node 2 cpus: 32-47
-# node 3 cpus: 48-63
-# node distances:
-# node   0   1   2   3 
-#   0:  10  24  24  24 
-#   1:  24  10  24  24 
-#   2:  24  24  10  24 
-#   3:  24  24  24  10 
-
-# 3. Verify Core Performance Boost (CPB) is Disabled (returns 0)
+# 2. Verify Core Performance Boost (CPB) is Disabled (returns 0)
 cat /sys/devices/system/cpu/cpufreq/boost
 # Output: 0
 
-# 4. Verify C-States are Disabled (returns only C0 active)
+# 3. Verify C-States are Disabled (returns only C0 active)
 cat /sys/devices/system/cpu/cpu0/cpuidle/state*/name
 
-# 5. Verify PCIe ASPM is Disabled
+# 4. Verify PCIe ASPM is Disabled
 cat /sys/module/pcie_aspm/parameters/policy
 # Output: [performance]
 
-# 6. Verify IOMMU / AMD-Vi is Disabled
+# 5. Verify IOMMU is Disabled
 dmesg | grep -i -E "AMD-Vi|IOMMU" | grep -i "disabled"
 
-# 7. Execute the HFT 4-Tier Audit Suite
+# 6. Execute the HFT 4-Tier Audit Suite
 sudo ./hft_tuning.sh --verify
-```
-
----
-
-#### 5. Enterprise Automation via Supermicro SUM (Supermicro Update Manager)
-For automated provisioning across bare-metal server fleets without manual KVM interaction:
-
-```bash
-# 1. Query current BIOS configuration
-sum -i <bmc_ip> -u ADMIN -p <bmc_password> -c GetCurrentBiosCfg --file current_bios.cfg
-
-# 2. Create the HFT low-latency parameter override file
-cat << 'EOF_SUM' > hft_epyc_bios.cfg
-[CPU Configuration]
-SMT Control=Disable
-
-[AMD CBS]
-Core Performance Boost=Disabled
-Global C-state Control=Disabled
-NUMA nodes per socket=NPS4
-ACPI SRAT L3 NUMA=Enabled
-Determinism Slider=Performance Determinism
-L1 Stream HW Prefetcher=Disabled
-L1 Stride Prefetcher=Disabled
-L2 Stream HW Prefetcher=Disabled
-L2 Up/Down Prefetcher=Disabled
-Patrol Scrub=Disabled
-IOMMU=Disabled
-PCIe ASPM Support=Disabled
-
-[Chipset Configuration]
-Power Performance Policy=High Performance
-Fan Speed Control Mode=Full Speed
-EOF_SUM
-
-# 3. Flash configuration to BIOS CMOS over out-of-band IPMI
-sum -i <bmc_ip> -u ADMIN -p <bmc_password> -c ChangeBiosCfg --file hft_epyc_bios.cfg --reboot
 ```
 
 
@@ -536,6 +446,95 @@ sudo ethtool -C eth0 adaptive-rx off adaptive-tx off rx-usecs 0 tx-usecs 0
 
 # Strip generic latency-inducing offloads
 sudo ethtool -K eth0 gro off lro off tso off gso off rx off tx off
+```
+
+### End-to-End Market Data Ingestion Pipeline (AF_XDP to Lock-Free SPSC Queue)
+
+To achieve deterministic sub-microsecond latency, the network I/O thread (Producer) polling the AF_XDP ring must never block, lock, or wait on the application logic. Packets are ingested via AF_XDP and instantly handed off to the strategy thread (Consumer) over a **lock-free Single-Producer Single-Consumer (SPSC) ring buffer**.
+
+#### 1. Minimal Lock-Free SPSC Ring Buffer (C++20)
+Using memory-order acquire/release semantics guarantees cache-coherency without expensive atomic locks or mutexes. `alignas(64)` prevents false sharing by placing the head and tail atomics on separate cache lines.
+
+```cpp
+#include <atomic>
+#include <cstdint>
+#include <vector>
+
+template <typename T, size_t Size>
+class LockFreeSPSC {
+    static_assert((Size & (Size - 1)) == 0, "Size must be a power of 2");
+    
+    std::vector<T> buffer;
+    alignas(64) std::atomic<size_t> head{0}; // Written by Producer (I/O thread)
+    alignas(64) std::atomic<size_t> tail{0}; // Written by Consumer (Strategy thread)
+    
+public:
+    LockFreeSPSC() : buffer(Size) {}
+
+    // Producer: AF_XDP Network Thread
+    bool push(const T& item) {
+        const size_t current_head = head.load(std::memory_order_relaxed);
+        const size_t next_head = (current_head + 1) & (Size - 1);
+        
+        if (next_head == tail.load(std::memory_order_acquire)) {
+            return false; // Queue full
+        }
+        
+        buffer[current_head] = item;
+        head.store(next_head, std::memory_order_release);
+        return true;
+    }
+
+    // Consumer: Trading Strategy Thread
+    bool pop(T& item) {
+        const size_t current_tail = tail.load(std::memory_order_relaxed);
+        
+        if (current_tail == head.load(std::memory_order_acquire)) {
+            return false; // Queue empty
+        }
+        
+        item = buffer[current_tail];
+        tail.store((current_tail + 1) & (Size - 1), std::memory_order_release);
+        return true;
+    }
+};
+```
+
+#### 2. AF_XDP Zero-Copy Ingestion Loop
+The Producer pins itself to the NIC's NUMA node, polls the AF_XDP Rx ring, and pushes normalized structures directly to the SPSC queue:
+
+```cpp
+LockFreeSPSC<MarketTick, 4096> market_data_queue;
+
+void af_xdp_rx_loop() {
+    uint32_t idx_rx, idx_fq;
+    
+    while (running) {
+        // 1. Poll the AF_XDP Rx ring for new hardware DMA packets
+        uint32_t rcvd = xsk_ring_cons__peek(&xsk->rx, 64, &idx_rx);
+        if (!rcvd) continue;
+
+        // 2. Pre-allocate empty buffers for the NIC on the Fill Queue
+        xsk_ring_prod__reserve(&xsk->umem->fq, rcvd, &idx_fq);
+
+        for (uint32_t i = 0; i < rcvd; i++) {
+            const struct xdp_desc* desc = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx++);
+            
+            // 3. Direct Zero-Copy memory access to the UMEM payload
+            void* pkt_data = xsk_umem__get_data(xsk->umem->buffer, desc->addr);
+            MarketTick tick = parse_udp_itch(pkt_data, desc->len);
+            
+            // 4. Push directly to lock-free SPSC queue for strategy thread
+            market_data_queue.push(tick);
+            
+            // 5. Recycle UMEM frame back to NIC hardware
+            *xsk_ring_prod__fill_addr(&xsk->umem->fq, idx_fq++) = desc->addr;
+        }
+
+        xsk_ring_prod__submit(&xsk->umem->fq, rcvd);
+        xsk_ring_cons__release(&xsk->rx, rcvd);
+    }
+}
 ```
 
 ---

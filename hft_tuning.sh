@@ -1914,7 +1914,7 @@ check_all_configs() {
     if [ "$socks" -gt 1 ] && [ "$nodes" -le 1 ]; then
         numa_s="WARN"
         numa_v="Interleaving ON"
-    elif grep -iq "AMD" /proc/cpuinfo 2>/dev/null && [ "$total_cores" -ge 32 ] && [ "$nodes" -le 1 ]; then
+    elif grep -iq "AMD" /proc/cpuinfo 2>/dev/null && [ "$total_cores" -ge 64 ] && [ "$nodes" -le 1 ]; then
         numa_s="WARN"
         numa_v="NPS1 (Set NPS4)"
     elif [ "$nodes" -ge 4 ]; then
