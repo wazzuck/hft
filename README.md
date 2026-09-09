@@ -97,10 +97,10 @@ With Linux **AF_XDP (eXpress Data Path)**:
 
 ## ⚙ BIOS / UEFI Firmware Configuration (AMD Ryzen 9 9950X / X870E)
 
-Before applying operating system tunings, configure the system's UEFI setup (via physical console or remote management). Modern ultra-low latency trading setups deploy dedicated ultra-high-frequency (UHF) execution nodes powered by the **AMD Ryzen 9 9950X** processor (Zen 5, 16 physical cores, 32 threads, 64MB L3 cache, up to 5.7 GHz) on **X670E or X870E** low-jitter motherboards (from vendors like ASUS ROG, MSI, or Gigabyte) running standard AMI UEFI BIOS.
+Before applying operating system tunings, configure the system's UEFI setup (via physical console or remote management). Modern low latency high frequency trading setups deploy dedicated execution platforms powered by the **AMD Ryzen 9 9950X** processor (Zen 5, 16 physical cores, 32 threads, 64MB L3 cache, up to 5.7 GHz) on **X670E or X870E** low-jitter motherboards (from vendors like ASUS ROG, MSI, or Gigabyte) running standard AMI UEFI BIOS.
 
 > [!TIP]
-> **Architectural Rationale:** The deliberate deployment of an ultra-high-frequency processor like the 9950X over a massive 128-core server processor is driven by its **superior single-thread clock scaling (up to 5.7 GHz)**. In quantitative trading and market making, maximizing **single-thread tick-to-trade determinism** for the critical-path order execution gateway is exponentially more valuable than having massive core counts designed for aggregate multi-tenant throughput.
+> **Architectural Rationale:** The deliberate deployment of a dedicated execution processor like the 9950X for low latency high frequency trading over a massive 128-core server processor is driven by its **superior single-thread clock scaling (up to 5.7 GHz)**. In quantitative trading and market making, maximizing **single-thread tick-to-trade determinism** for the critical-path order execution gateway is exponentially more valuable than having massive core counts designed for aggregate multi-tenant throughput.
 
 Due to the modular dual-CCD architecture (2 Core Complex Dies interconnected via the Infinity Fabric), factory BIOS settings can cause cross-die latency penalties and clock-frequency jitter. Follow this tuning guide to achieve deterministic execution.
 
@@ -123,7 +123,7 @@ Due to the modular dual-CCD architecture (2 Core Complex Dies interconnected via
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1. Accessing UHF Node UEFI / BIOS Setup
+### 1. Accessing Low Latency High Frequency Trading Platform UEFI / BIOS Setup
 1. Reboot the server.
 2. During the early Power-On Self-Test (POST) screen, repeatedly press `<DEL>` or `<F2>` until the UEFI BIOS Utility launches.
 3. Switch to **Advanced Mode** (usually `F7`).
