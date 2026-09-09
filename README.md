@@ -281,23 +281,25 @@ sum -i <bmc_ip> -u ADMIN -p <bmc_password> -c ChangeBiosCfg --file hft_epyc_bios
 
 ---
 
-### 🎛 General & Intel-Specific BIOS Tuning Guide (e.g. Intel Xeon Scalable Sapphire Rapids / Emerald Rapids)
+### 🎛 General & Intel-Specific BIOS Tuning Guide (e.g. Intel Xeon 6 with P-Cores "Granite Rapids")
 
-For Intel-based hardware architectures (such as state-of-the-art **Intel Xeon Platinum 8490H** "Sapphire Rapids" or 5th Gen "Emerald Rapids"), apply the following configurations:
+For Intel-based hardware architectures—such as the state-of-the-art **Intel Xeon 6 (Granite Rapids)** featuring up to 128 Performance-cores (P-cores) and high-bandwidth MRDIMMs—apply the following configurations to achieve deterministic low latency:
 
 | BIOS Setting | Recommended Value | Low-Latency Architectural Rationale |
 |---|---|---|
 | **Simultaneous Multi-Threading (SMT / HT)** | **Disabled** | SMT sibling threads share L1/L2 caches, execution ports, and store buffers. Disabling eliminates noisy-neighbor contention. |
 | **CPU Power and Performance Policy** | **Maximum Performance** | Forces internal power management hardware to maintain maximum uncore and core clock states. |
-| **Enhanced Intel SpeedStep (EIST)** | **Disabled** | Locks CPU clock to nominal max frequency; prevents P-state frequency downclocking. |
-| **Intel Speed Shift (HWP)** | **Disabled** | Prevents autonomous processor hardware frequency modulation. |
+| **Enhanced Intel SpeedStep (EIST) / Speed Shift (HWP)** | **Disabled** | Locks CPU clock to nominal max frequency; prevents P-state frequency downclocking and autonomous processor hardware modulation. |
 | **CPU C-States (C1E, C3, C6, C7, C8)** | **Disabled (C0 only)** | Eliminates CPU idle power saving states. Prevents sleep-state exit latency spikes (10µs–150µs). |
-| **Intel Turbo Boost / AMD CPB** | **Disabled (Deterministic)** | While Turbo increases peak burst clock, it causes thermal throttling and clock jitter. Disabling guarantees fixed cycles per instruction. |
+| **Intel Turbo Boost** | **Disabled (Deterministic)** | While Turbo increases peak burst clock, it causes thermal throttling and clock jitter. Disabling guarantees fixed cycles per instruction. |
 | **Energy Performance Bias (EPB)** | **0 (Performance)** | Overrides BIOS power saving; biases CPU internal power balancing strictly to lowest latency. |
-| **NUMA Node Interleaving** | **Disabled (NUMA Active)** | **CRITICAL**: Enabling interleaving merges all memory into a single UMA pool, guaranteeing 50% remote memory accesses. Must remain Disabled. |
-| **Sub-NUMA Clustering (SNC)** | **Enabled (or NPS=4)** | Partitions LLC and memory channels into localized clusters, reducing local DRAM latency by ~10-15ns. |
+| **NUMA Node Interleaving** | **Disabled** | **CRITICAL**: Enabling interleaving merges all memory into a single UMA pool, guaranteeing high-latency remote memory accesses. Must remain Disabled. |
+| **Sub-NUMA Clustering (SNC)** | **SNC3 / SNC4 (Enabled)** | Granite Rapids uses a multi-compute-tile architecture. Enabling SNC partitions the L3 cache and memory channels into localized clusters, significantly reducing local DRAM latency. |
+| **Intel Advanced Matrix Extensions (AMX)** | **Application-Dependent** | For ML-based HFT, enabling AMX accelerates INT8/BF16 inference dramatically. For traditional order books without ML, disabling it prevents AVX-heavy frequency throttling. |
+| **Intel Data Direct I/O (DDIO)** | **Enabled (Restricted Ways)** | DDIO writes inbound network packets directly to L3 cache instead of DRAM. Tuning DDIO to restrict cache-way allocation prevents packet bursts from evicting your application's trading data. |
+| **Memory Operating Speed (MRDIMMs)** | **Max Fixed Frequency** | While Granite Rapids supports blazing fast 8,800 MT/s MRDIMMs, lock the frequency to prevent memory controller gear-down shifting and guarantee deterministic access times. |
 | **PCIe Active State Power Mgmt (ASPM)** | **Disabled** | Keeps PCIe links locked in the full-power L0 state, avoiding L0s/L1 resume delays when transmitting packets. |
-| **Intel VT-d / AMD-Vi (IOMMU)** | **Disabled** | Disables IOTLB memory address translation for PCIe DMA bursts (~50–100ns saved per packet). |
+| **Intel VT-d (IOMMU)** | **Disabled** | Disables IOTLB memory address translation for PCIe DMA bursts (~50–100ns saved per packet). |
 | **Hardware Prefetchers (L2 / DCU)** | **Audited / Selective** | L2 streamer and DCU spatial prefetchers can pollute caches during sparse order book hash lookups. |
 
 ---
