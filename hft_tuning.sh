@@ -36,10 +36,26 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 
-# Dedicated results directory
-RESULTS_DIR="$SCRIPT_DIR/results"
-[ -d "$HOME/results" ] && RESULTS_DIR="$HOME/results"
+# Dedicated results directory with CPU model auto-detection
+BASE_RESULTS_DIR="$SCRIPT_DIR/results"
+[ -d "$HOME/results" ] && BASE_RESULTS_DIR="$HOME/results"
+
+# Detect CPU model for results segregation (now and in the future)
+CPU_RAW_NAME="$(lscpu 2>/dev/null | awk -F: '/Model name/ {print $2; exit}' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' || awk -F: '/model name/ {print $2; exit}' /proc/cpuinfo 2>/dev/null || echo "Unknown_CPU")"
+# Sanitize to clean folder name (e.g. "AMD_Ryzen_9_9900X", "Intel_Core_i9-14900K")
+CPU_DIR_NAME="$(echo "$CPU_RAW_NAME" | sed -E -e 's/\([R|TM]+\)//g' -e 's/([0-9]+-Core.*|CPU.*|[0-9]+th Gen.*)//g' -e 's/[^a-zA-Z0-9._-]/_/g' -e 's/__*/_/g' -e 's/^_//' -e 's/_$//')"
+[ -z "$CPU_DIR_NAME" ] && CPU_DIR_NAME="$(echo "$CPU_RAW_NAME" | sed -e 's/[^a-zA-Z0-9._-]/_/g' -e 's/__*/_/g' -e 's/^_//' -e 's/_$//')"
+[ -z "$CPU_DIR_NAME" ] && CPU_DIR_NAME="Generic_CPU"
+
+RESULTS_DIR="$BASE_RESULTS_DIR/$CPU_DIR_NAME"
+mkdir -p "$RESULTS_DIR" 2>/dev/null || RESULTS_DIR="/tmp/$CPU_DIR_NAME"
 mkdir -p "$RESULTS_DIR" 2>/dev/null || RESULTS_DIR="/tmp"
+
+# Create symlink for full CPU model name if different (e.g. AMD_Ryzen_9_9900X_12-Core_Processor -> AMD_Ryzen_9_9900X)
+CPU_FULL_NAME="$(echo "$CPU_RAW_NAME" | sed -E -e 's/\([R|TM]+\)//g' -e 's/[^a-zA-Z0-9._-]/_/g' -e 's/__*/_/g' -e 's/^_//' -e 's/_$//')"
+if [ -n "$CPU_FULL_NAME" ] && [ "$CPU_FULL_NAME" != "$CPU_DIR_NAME" ] && [ -d "$RESULTS_DIR" ]; then
+    ln -sfn "$CPU_DIR_NAME" "$BASE_RESULTS_DIR/$CPU_FULL_NAME" 2>/dev/null || true
+fi
 
 BEFORE_FILE="$RESULTS_DIR/before_latency_${TIMESTAMP}.txt"
 BEFORE_LATEST="$RESULTS_DIR/before_latency_latest.txt"
@@ -714,6 +730,10 @@ run_benchmark_pass() {
         echo "CYCLIC_MAX_NS=$c_max"
     } > "$outfile"
     cp -f "$outfile" "$linkfile" 2>/dev/null || true
+    if [ -n "$BASE_RESULTS_DIR" ] && [ "$RESULTS_DIR" != "$BASE_RESULTS_DIR" ]; then
+        cp -f "$outfile" "$BASE_RESULTS_DIR/$(basename "$outfile")" 2>/dev/null || true
+        cp -f "$outfile" "$BASE_RESULTS_DIR/$(basename "$linkfile")" 2>/dev/null || true
+    fi
 
     # Display results
     print_subheader "${phase} Nanosecond Latency Results"
