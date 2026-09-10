@@ -165,9 +165,22 @@ If you have previously configured enterprise AMD EPYC servers, the **AMI Aptio S
 
 ---
 
-### 3. AMI Aptio Setup (Aptio V) Navigation Tree
+### 3. AMI Aptio Setup (Aptio V) Navigation Tree & Controls
 
-On modern AM5 motherboards (e.g. ASRock Rack, Supermicro, ASUS, MSI) running AMI Aptio Setup, use the arrow keys to navigate the top-level menu tabs:
+On modern AM5 motherboards (e.g. ASRock Rack, Supermicro, ASUS, MSI) running AMI Aptio Setup, use the standard keyboard controls to navigate:
+
+#### Universal Aptio Keyboard Controls
+| Key(s) | Action in Aptio Setup |
+| :--- | :--- |
+| `[←]` / `[→]` | **Select Screen**: Switch horizontally between top-level tabs (`Main`, `Advanced`, `Chipset/OC`, `Boot`, etc.). |
+| `[↑]` / `[↓]` | **Select Item**: Move the selection cursor up and down through menu lines. |
+| `[Enter]` | **Select / Open**: Enters a sub-menu (denoted by `►` or `>`), or opens a popup selection list for an option. |
+| `[+]` / `[-]` or `[PgUp]` / `[PgDn]` | **Change Option**: Cycles through available values for the highlighted setting without opening a popup dialog. |
+| `[Esc]` | **Exit / Back**: Steps backward to the parent menu or exits the current dialog. |
+| `[F1]` | **General Help**: Displays basic keyboard control help. |
+| `[F7]` | **Advanced / EZ Mode Toggle**: On consumer boards (ASUS/MSI/ASRock), toggles between graphical EZ Mode and classic Advanced text mode. |
+| `[F9]` | **Optimized Defaults**: Loads factory optimized default settings. |
+| `[F10]` | **Save & Exit**: Opens the confirmation prompt to save all modifications and reboot. |
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -184,7 +197,61 @@ On modern AM5 motherboards (e.g. ASRock Rack, Supermicro, ASUS, MSI) running AMI
   [Platform]  [Core Clocks]  [Fabric & Bus] [Passwords] [Boot Order] [Save & Reset]
 ```
 
-#### Step-by-Step Aptio Low-Latency Configuration
+---
+
+### 4. Step-by-Step Keystroke Walkthrough for Each Low-Latency Setting
+
+Follow these exact keystroke sequences to navigate directly to each critical HFT configuration inside AMI Aptio Setup:
+
+#### 1. Disable Simultaneous Multi-Threading (SMT)
+1. At the top navigation bar, press `[→]` to highlight **`Advanced`**.
+2. Press `[↓]` until **`CPU Configuration`** (or `AMD CBS` → `CPU Common Options`) is highlighted, then press `[Enter]`.
+3. Press `[↓]` to navigate to **`SMT Control`** (or `SMT Mode`).
+4. Press `[Enter]`. A small selection dialog will pop up with options (`Auto`, `Enable`, `Disable`).
+5. Press `[↓]` to highlight **`Disable`** (or `Disabled`), then press `[Enter]`.
+6. Press `[Esc]` to return to the **`Advanced`** menu screen.
+
+#### 2. Disable Sleep States, Clock Jitter & Stabilize VRM Voltages
+1. From the **`Advanced`** menu, press `[↓]` to highlight **`AMD CBS`**, then press `[Enter]`.
+2. Press `[↓]` to highlight **`CPU Common Options`**, then press `[Enter]`.
+3. In this sub-menu:
+   - **Core Performance Boost**: Press `[↓]` to highlight **`Core Performance Boost`** → press `[Enter]` → use `[↓]` to select **`Disabled`** → press `[Enter]`.
+   - **Global C-state Control**: Press `[↓]` to highlight **`Global C-state Control`** → press `[Enter]` → use `[↓]` to select **`Disabled`** → press `[Enter]`.
+   - **Power Supply Idle Control**: Press `[↓]` to highlight **`Power Supply Idle Control`** → press `[Enter]` → use `[↓]` to select **`Typical Current Idle`** → press `[Enter]`.
+   - **Streaming Stores Control**: Press `[↓]` to highlight **`Streaming Stores Control`** → press `[Enter]` → use `[↓]` to select **`Enabled`** → press `[Enter]`.
+4. Press `[Esc]` to back out to the **`AMD CBS`** menu.
+
+#### 3. Disable IOMMU (Strip Out DMA Translation Latency)
+1. While still inside the **`AMD CBS`** menu, press `[↓]` to highlight **`NBIO Common Options`**, then press `[Enter]`.
+2. Press `[↓]` to highlight **`IOMMU`**, then press `[Enter]`.
+3. Use `[↓]` to select **`Disabled`**, then press `[Enter]`.
+4. Press `[Esc]` twice to back out to the top-level **`Advanced`** menu.
+
+#### 4. Configure PCIe Link States & 64-Bit Memory Mapping
+1. From the **`Advanced`** menu, press `[↓]` to highlight **`PCI Subsystem Settings`** (or `PCIe / PCI Configuration`), then press `[Enter]`.
+2. In this sub-menu:
+   - **Above 4G Decoding**: Press `[↓]` to highlight **`Above 4G Decoding`** → press `[Enter]` → select **`Enabled`** → press `[Enter]`.
+   - **Re-Size BAR Support**: Press `[↓]` to highlight **`Re-Size BAR Support`** → press `[Enter]` → select **`Enabled`** (or `Auto`) → press `[Enter]`.
+   - **PCIe ASPM Support**: Press `[↓]` to highlight **`PCIe ASPM Support`** → press `[Enter]` → select **`Disabled`** → press `[Enter]`.
+3. Press `[Esc]` to return to the **`Advanced`** menu.
+
+#### 5. Lock Infinity Fabric & Memory Clocks to 1:1 (Zero-Gear Penalty)
+1. Press `[→]` to navigate to the **`OC Tweaker`** / **`Ai Tweaker`** / **`Extreme Tweaker`** top tab (on server boards without an OC tab, go to `Advanced` → `AMD CBS` → `DF Common Options`).
+2. Highlight **`FCLK Frequency`** → press `[Enter]` → select **`2000 MHz`** (or match memory clock MCLK) → press `[Enter]`.
+3. Highlight **`UCLK DIV1 MODE`** → press `[Enter]` → select **`UCLK=MEMCLK`** → press `[Enter]`.
+
+#### 6. Save Configuration & Reboot
+1. Press the **`[F10]`** hotkey from any screen (or press `[→]` until the **`Save & Exit`** tab is highlighted, then press `[Enter]` on **`Save Changes and Reset`**).
+2. A confirmation prompt will appear:
+   ```text
+   Save configuration and reset?
+             [Yes]       [No]
+   ```
+3. Ensure **`[Yes]`** is selected and press **`[Enter]`**. The server will reboot with all low-latency hardware parameters active.
+
+---
+
+### 5. Aptio Low-Latency Settings Summary Reference Table
 
 #### A. CPU Core Isolation & Multithreading (`Advanced` → `CPU Configuration`)
 | Aptio Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
@@ -215,12 +282,7 @@ On modern AM5 motherboards (e.g. ASRock Rack, Supermicro, ASUS, MSI) running AMI
 
 ---
 
-### 4. Saving & Exiting Aptio Setup
-Press `<F10>` (**Save & Exit**), select **Save Changes and Reset**, and press `<Enter>`.
-
----
-
-### 5. Post-Boot Linux Verification Commands for AMD Ryzen 9 9950X
+### 6. Post-Boot Linux Verification Commands for AMD Ryzen 9 9950X
 Verify your hardware configuration inside Linux:
 
 ```bash
