@@ -11,11 +11,17 @@
 
 | Component | Hardware Specification | HFT Architectural Significance |
 | :--- | :--- | :--- |
-| **Platform** | Supermicro AS-3015MR-H8TNR (AMI Aptio BIOS 1.8) | Microblade server platform designed for high-density compute |
-| **Processor** | **AMD Ryzen 9 9900X** (Zen 5, 12 Physical Cores, 24 Threads) | High clock frequency architecture with up to **5.66 GHz** boost clock |
-| **L3 Cache** | 64MB Total (2x 32MB L3 per 6-core CCD) | Low-latency local cache; cross-die traffic must be avoided via core pinning |
-| **Memory** | **96 GB DDR5 @ 5600 MT/s** (2x 48 GB DIMMs, 2-channel UMA) | High-bandwidth uniform memory access domain |
-| **Network** | **Intel 82599ES 10-Gigabit SFI/SFP+** (`ixgbe`) bonded to `bond0` | Native hardware support for AF_XDP Zero-Copy ring buffers |
+| **Server Platform** | Supermicro AS-3015MR-H8TNR (Chassis) | Microblade server platform designed for high-density, low-latency compute |
+| **Motherboard** | Supermicro H13SRD-F | Dedicated single-socket AM5 server board with PCIe Gen 5 support |
+| **BIOS Firmware** | American Megatrends (AMI) Aptio v1.8 (2025-12-23) | Latest server UEFI firmware with AMD AGESA 1.2.0.x microcode |
+| **Processor** | **AMD Ryzen 9 9900X** (Zen 5, 12 Physical Cores) | High single-thread clock frequency architecture scaling up to **5.66 GHz** |
+| **Cache Hierarchy** | L1d: 576 KB, L1i: 384 KB, L2: 12 MB, L3: 64 MB | 2x 32MB L3 per 6-core CCD; thread affinity required to prevent cross-die L3 hops |
+| **Memory Modules** | **96 GB (2x 48 GB) Micron DDR5-5600** (`MTC16C208XS1UC56BB1 KC`) | Dual-channel UMA memory installed in slots DIMMA2 and DIMMB2 |
+| **Storage Subsystem** | **2x 960 GB Micron 7500 PRO NVMe SSD** (`MTFDKCC960TGP-1BK1JABYY`) | Enterprise PCIe Gen 5 / NVMe 2.0 SSDs configured in Linux Software RAID1 (`md0`) |
+| **Network Adapters** | **2x Intel 82599ES 10-Gigabit SFI/SFP+** (`8086:10fb`, `15d9:1b1b`) | Dual-port 10GbE running `ixgbe` driver; supports native hardware AF_XDP zero-copy |
+| **Network Bonding** | `bond0` (Active-Backup / LACP) on IP `84.32.70.218` | Carrier-grade network aggregation with physical slave interfaces `enp1s0f0` & `enp1s0f1` |
+| **Operating System** | **AlmaLinux release 10.2 (Lavender Lion)** | Enterprise Linux 10 with GCC 14.3.1 toolchain |
+| **Kernel Release** | Linux `6.12.0-211.7.3.el10_2.x86_64` | LTS modern kernel with enhanced AF_XDP zero-copy and native Zen 5 PMU |
 
 ---
 
@@ -74,13 +80,15 @@ The following 10 runtime tunings are actively enforced on `cherry`:
 ## 5. Stored Artifact Locations
 
 - **Remote Server (`cherry`)**:
-  - `/root/hft/results/before_latency_latest.txt`
-  - `/root/hft/results/after_latency_latest.txt`
-  - `/root/hft/results/before_latency_20260910_005443.txt`
-  - `/root/hft/results/after_latency_20260910_005443.txt`
-  - `/root/hft/results/after_latency_20260910_005724.txt`
+  - `/root/hft/results/AMD_Ryzen_9_9900X_20260910_005443/host_hardware_profile.txt`
+  - `/root/hft/results/AMD_Ryzen_9_9900X_20260910_005443/host_hardware_profile.json`
+  - `/root/hft/results/AMD_Ryzen_9_9900X_20260910_005443/before_latency_latest.txt`
+  - `/root/hft/results/AMD_Ryzen_9_9900X_20260910_005443/after_latency_latest.txt`
+  - `/root/hft/results/AMD_Ryzen_9_9900X_20260910_005443/after_latency_20260910_005724.txt`
 
 - **Local Control Workspace (`/home/neville/hft`)**:
-  - [`results/cherry/before_latency_latest.txt`](file:///home/neville/hft/results/cherry/before_latency_latest.txt)
-  - [`results/cherry/after_latency_latest.txt`](file:///home/neville/hft/results/cherry/after_latency_latest.txt)
-  - [`results/cherry/BENCHMARK_REPORT.md`](file:///home/neville/hft/results/cherry/BENCHMARK_REPORT.md)
+  - [`results/AMD_Ryzen_9_9900X_20260910_005443/BENCHMARK_REPORT.md`](file:///home/neville/hft/results/AMD_Ryzen_9_9900X_20260910_005443/BENCHMARK_REPORT.md)
+  - [`results/AMD_Ryzen_9_9900X_20260910_005443/host_hardware_profile.txt`](file:///home/neville/hft/results/AMD_Ryzen_9_9900X_20260910_005443/host_hardware_profile.txt)
+  - [`results/AMD_Ryzen_9_9900X_20260910_005443/host_hardware_profile.json`](file:///home/neville/hft/results/AMD_Ryzen_9_9900X_20260910_005443/host_hardware_profile.json)
+  - [`results/AMD_Ryzen_9_9900X_20260910_005443/before_latency_latest.txt`](file:///home/neville/hft/results/AMD_Ryzen_9_9900X_20260910_005443/before_latency_latest.txt)
+  - [`results/AMD_Ryzen_9_9900X_20260910_005443/after_latency_latest.txt`](file:///home/neville/hft/results/AMD_Ryzen_9_9900X_20260910_005443/after_latency_latest.txt)

@@ -1,0 +1,47 @@
+{
+  "capture_timestamp_utc": "2026-09-10T01:08:27Z",
+  "hostname": "cherry",
+  "os": {
+    "pretty_name": "AlmaLinux 10.2 (Lavender Lion)",
+    "kernel_release": "6.12.0-211.7.3.el10_2.x86_64",
+    "architecture": "x86_64",
+    "clocksource": "tsc",
+    "cmdline": "BOOT_IMAGE=(mduuid/0564800037b76f2641caad9a0ecde174)/boot/vmlinuz-6.12.0-211.7.3.el10_2.x86_64 root=UUID=d5e702c2-bea7-48c8-badc-d00aa5710755 ro rd.md.uuid=05648000:37b76f26:41caad9a:0ecde174"
+  },
+  "system": {
+    "manufacturer": "Supermicro",
+    "product_name": "AS -3015MR-H8TNR",
+    "product_version": "0123456789",
+    "motherboard_model": "H13SRD-F",
+    "motherboard_vendor": "Supermicro",
+    "bios_vendor": "American Megatrends International, LLC.",
+    "bios_version": "1.8",
+    "bios_release_date": "12/23/2025"
+  },
+  "processor": {
+    "model": "AMD Ryzen 9 9900X 12-Core Processor",
+    "sockets": "1",
+    "cores_per_socket": "12",
+    "threads_per_core": "1",
+    "total_logical_cpus": "24",
+    "online_cpus": "0-11",
+    "offline_cpus": "12-23",
+    "max_frequency_mhz": "5662.0161",
+    "scaling_governor": "performance",
+    "smt_control": "off",
+    "cstate_driver": "none",
+    "numa_nodes": "1",
+    "cache": {
+      "l1d": "576 KiB (12 instances)",
+      "l1i": "384 KiB (12 instances)",
+      "l2": "12 MiB (12 instances)",
+      "l3": "64 MiB (2 instances)"
+    }
+  },
+  "memory": {
+    "total_gb": "91.9",
+    "total_kb": "96383980",
+    "available_kb": "91653620",
+    "swap_total_kb": "8388604"
+  }
+}

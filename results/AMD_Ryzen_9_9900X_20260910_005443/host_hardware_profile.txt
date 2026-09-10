@@ -1,0 +1,125 @@
+================================================================================
+HOST SYSTEM & HARDWARE SPECIFICATION PROFILE
+================================================================================
+Capture Timestamp    : 2026-09-10 01:08:27 UTC
+Host Name            : cherry
+Operating System     : AlmaLinux 10.2 (Lavender Lion)
+Linux Kernel         : 6.12.0-211.7.3.el10_2.x86_64 (x86_64)
+Active Clocksource   : tsc
+Kernel Command Line  : BOOT_IMAGE=(mduuid/0564800037b76f2641caad9a0ecde174)/boot/vmlinuz-6.12.0-211.7.3.el10_2.x86_64 root=UUID=d5e702c2-bea7-48c8-badc-d00aa5710755 ro rd.md.uuid=05648000:37b76f26:41caad9a:0ecde174
+
+--------------------------------------------------------------------------------
+1. SYSTEM & MOTHERBOARD
+--------------------------------------------------------------------------------
+System Manufacturer  : Supermicro
+Product Model Name   : AS -3015MR-H8TNR
+Product Version      : 0123456789
+Motherboard Model    : H13SRD-F (Vendor: Supermicro)
+BIOS Firmware Vendor : American Megatrends International, LLC.
+BIOS Firmware Version: 1.8
+BIOS Release Date    : 12/23/2025
+
+--------------------------------------------------------------------------------
+2. PROCESSOR ARCHITECTURE & TOPOLOGY
+--------------------------------------------------------------------------------
+CPU Model String     : AMD Ryzen 9 9900X 12-Core Processor
+Instruction Arch     : x86_64
+Physical Sockets     : 1
+Physical Cores/Socket: 12
+Threads per Core     : 1
+Total Logical Cores  : 24
+Online CPU Mask      : 0-11
+Offline CPU Mask     : 12-23
+Max Rated Frequency  : 5662.0161 MHz
+Scaling Governor     : performance
+SMT Control State    : off
+CPU Idle Driver      : none
+NUMA Architecture    : 1 NUMA Node(s)
+L1 Data Cache        : 576 KiB (12 instances)
+L1 Instruction Cache : 384 KiB (12 instances)
+L2 Cache             : 12 MiB (12 instances)
+L3 Cache             : 64 MiB (2 instances)
+Hardware TSC Features: constant_tsc nonstop_tsc
+
+--------------------------------------------------------------------------------
+3. MEMORY SUBSYSTEM & PHYSICAL DIMMS
+--------------------------------------------------------------------------------
+Total System DRAM    : 91.9 GB (96383980 kB)
+Available DRAM       : 87.4 GB
+Configured Swap Space: 8.0 GB
+
+Physical DIMM Modules (DMI):
+	Locator: DIMMA1
+	Bank Locator: P0_Node0_Channel0_Dimm0
+	Size: 48 GiB
+	Locator: DIMMA2
+	Bank Locator: P0_Node0_Channel0_Dimm1
+	Type: DDR5
+	Speed: 5600 MT/s
+	Manufacturer: Micron Technology
+	Part Number: MTC16C208XS1UC56BB1 KC        
+	Configured Memory Speed: 5600 MT/s
+	Volatile Size: 48 GiB
+	Locator: DIMMB1
+	Bank Locator: P0_Node0_Channel1_Dimm0
+	Size: 48 GiB
+	Locator: DIMMB2
+	Bank Locator: P0_Node0_Channel1_Dimm1
+	Type: DDR5
+	Speed: 5600 MT/s
+	Manufacturer: Micron Technology
+	Part Number: MTC16C208XS1UC56BB1 KC        
+	Configured Memory Speed: 5600 MT/s
+	Volatile Size: 48 GiB
+
+--------------------------------------------------------------------------------
+4. NETWORK CONTROLLERS & PHYSICAL INTERFACES
+--------------------------------------------------------------------------------
+PCI Network Controllers:
+01:00.0 Ethernet controller [0200]: Intel Corporation 82599ES 10-Gigabit SFI/SFP+ Network Connection [8086:10fb] (rev 01)
+	Subsystem: Super Micro Computer Inc Device [15d9:1b1b]
+	Kernel driver in use: ixgbe
+	Kernel modules: ixgbe
+01:00.1 Ethernet controller [0200]: Intel Corporation 82599ES 10-Gigabit SFI/SFP+ Network Connection [8086:10fb] (rev 01)
+	Subsystem: Super Micro Computer Inc Device [15d9:1b1b]
+	Kernel driver in use: ixgbe
+	Kernel modules: ixgbe
+
+Active Network Interfaces:
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+enp7s0f4u2u2c2   UNKNOWN        169.254.3.1/24 fe80::bc3a:f2ff:feb6:59f/64 
+bond0            UP             84.32.70.218/26 fe80::925a:8ff:fe3e:e6/64 
+bond0.1953@bond0 UP             10.182.251.21/24 fe80::925a:8ff:fe3e:e6/64 
+enp1s0f0         UP             
+enp1s0f1         UP             
+
+--------------------------------------------------------------------------------
+5. STORAGE & NVME SUBSYSTEM
+--------------------------------------------------------------------------------
+PCI Storage Controllers:
+03:00.0 Non-Volatile memory controller [0108]: Micron Technology Inc 7500 PRO NVMe SSD [1344:51b7] (rev 01)
+	Subsystem: Micron Technology Inc Device [1344:2000]
+	Kernel driver in use: nvme
+	Kernel modules: nvme
+04:00.0 Non-Volatile memory controller [0108]: Micron Technology Inc 7500 PRO NVMe SSD [1344:51b7] (rev 01)
+	Subsystem: Micron Technology Inc Device [1344:2000]
+	Kernel driver in use: nvme
+	Kernel modules: nvme
+
+Block Storage Devices:
+NAME          SIZE TYPE  FSTYPE            MODEL                   MOUNTPOINTS
+nvme1n1     894.3G disk                    MTFDKCC960TGP-1BK1JABYY 
+|-nvme1n1p1   488M part  vfat                                      /boot/efi
+`-nvme1n1p2 893.8G part  linux_raid_member                         
+  `-md0     893.6G raid1 ext4                                      /
+nvme0n1     894.3G disk                    MTFDKCC960TGP-1BK1JABYY 
+|-nvme0n1p1   488M part  vfat                                      /boot/efi/almalinux2
+`-nvme0n1p2 893.8G part  linux_raid_member                         
+  `-md0     893.6G raid1 ext4                                      /
+
+--------------------------------------------------------------------------------
+6. PCIE BUS SUBSYSTEM & VIRTUALIZATION
+--------------------------------------------------------------------------------
+PCIe ASPM Link Policy: [default] performance powersave powersupersave 
+IOMMU Hardware State : /sys/class/iommu/ivhd0
+================================================================================
