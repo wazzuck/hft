@@ -1193,7 +1193,7 @@ show_grub_parameters() {
 # Append to GRUB_CMDLINE_LINUX in /etc/default/grub:
 $grub_line
 
-# Update bootloader on AlmaLinux 9 / RHEL 9:
+# Update bootloader on AlmaLinux 10 / RHEL 10 (or 9):
 #   sudo grub2-mkconfig -o /boot/grub2/grub.cfg       (Legacy BIOS)
 #   sudo grub2-mkconfig -o /boot/efi/EFI/almalinux/grub.cfg  (UEFI)
 # Or using grubby:

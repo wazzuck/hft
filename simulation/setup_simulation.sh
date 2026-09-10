@@ -19,9 +19,9 @@ show_help() {
   HFT ALMALINUX SIMULATION ENVIRONMENT - USAGE GUIDE
 ================================================================================
 
-This script manages a fast, disposable AlmaLinux 9 virtual machine on your
+This script manages a fast, disposable AlmaLinux 10 virtual machine on your
 Debian host. It lets you simulate a remote bare-metal server locally so you can
-practice HFT low-latency tuning, test kernel settings, and run benchmarks at \$0
+practice HFT low-latency tuning, test kernel settings, and run benchmarks at $0
 cost before deploying to expensive paid hosts.
 
 USAGE:
@@ -52,7 +52,7 @@ TYPICAL EXPERIMENT WORKFLOW:
 
   2. Connect to the machine:
        ./setup_simulation.sh ssh
-       (or: ssh \$(./setup_simulation.sh status | awk '/IP:/ {print \$2}'))
+       (or: ssh $(./setup_simulation.sh status | awk '/IP:/ {print $2}'))
 
   3. Inside the VM, install tools and run benchmarks:
        sudo dnf install -y realtime-tests tuned tuned-profiles-cpu-partitioning numactl
@@ -71,14 +71,18 @@ TYPICAL EXPERIMENT WORKFLOW:
 EOF_HELP
 }
 
-# Locate base image in home directory or current directory
-if [ -f "$HOME/almalinux9-base.qcow2" ]; then
+# Locate base image in home directory or current directory (prioritize AlmaLinux 10)
+if [ -f "$HOME/almalinux10-base.qcow2" ]; then
+    BASE_IMG="$HOME/almalinux10-base.qcow2"
+elif [ -f "./almalinux10-base.qcow2" ]; then
+    BASE_IMG="./almalinux10-base.qcow2"
+elif [ -f "$HOME/almalinux9-base.qcow2" ]; then
     BASE_IMG="$HOME/almalinux9-base.qcow2"
 elif [ -f "./almalinux9-base.qcow2" ]; then
     BASE_IMG="./almalinux9-base.qcow2"
 else
     echo "[-] Error: AlmaLinux base image not found."
-    echo "    Expected at: $HOME/almalinux9-base.qcow2"
+    echo "    Expected at: $HOME/almalinux10-base.qcow2 or $HOME/almalinux9-base.qcow2"
     exit 1
 fi
 
@@ -149,6 +153,11 @@ EOF_META
         chmod 664 "$DISK_IMG"
 
         echo "[3/5] Launching AlmaLinux with host CPU and cache topology..."
+        os_variant="almalinux10"
+        if [[ "$BASE_IMG" == *"almalinux9"* ]]; then
+            os_variant="almalinux9"
+        fi
+
         virt-install \
             --name "$VM_NAME" \
             --memory "$RAM_MB" \
@@ -156,7 +165,7 @@ EOF_META
             --cpu host-passthrough,cache.mode=passthrough \
             --disk path="$(pwd)/$DISK_IMG",format=qcow2 \
             --disk path="$(pwd)/$SEED_ISO",device=cdrom \
-            --os-variant almalinux9 \
+            --os-variant "$os_variant" \
             --network default,model=virtio \
             --graphics none \
             --import \

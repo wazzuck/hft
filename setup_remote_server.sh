@@ -354,7 +354,7 @@ fi
 echo "  -> Remote Distribution Family: $ID_LIKE ($PRETTY_NAME)"
 
 if command -v dnf >/dev/null 2>&1; then
-    echo "  -> Configuring Enterprise Linux 9 Repositories (CRB & EPEL)..."
+    echo "  -> Configuring Enterprise Linux Repositories (CRB & EPEL)..."
     
     # Enable EPEL
     if ! rpm -q epel-release >/dev/null 2>&1; then

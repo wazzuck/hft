@@ -4,7 +4,7 @@
 # ==============================================================================
 # Purpose:
 #   1. Cleanly destroys any existing AlmaLinux simulation VM ('hft-alma').
-#   2. Provisions a fresh Copy-on-Write AlmaLinux 9 VM using setup_simulation.sh.
+#   2. Provisions a fresh Copy-on-Write AlmaLinux 10 VM using setup_simulation.sh.
 #   3. Deploys SSH credentials, toolchains, and clones the git repository
 #      using setup_remote_server.sh.
 #   4. Executes ~/hft/install.sh on the VM to install tmux, git, and the agy CLI.
@@ -42,7 +42,7 @@ print_banner() {
     cat << "EOF_BANNER"
   ╔══════════════════════════════════════════════════════════════════════════╗
   ║       🔄 HFT SIMULATION VM RECREATION & PROVISIONING SUITE 🔄           ║
-  ║      Destroy • Rebuild AlmaLinux 9 • Deploy Git Repo • Install AGY       ║
+  ║      Destroy • Rebuild AlmaLinux 10 • Deploy Git Repo • Install AGY      ║
   ╚══════════════════════════════════════════════════════════════════════════╝
 EOF_BANNER
     echo -e "${NC}"
@@ -106,7 +106,7 @@ Usage: $(basename "$0") [OPTIONS]
 
 Workflow:
   1. Destroys the active AlmaLinux KVM VM ('${VM_NAME}') and wipes overlay state.
-  2. Provisions a fresh Copy-on-Write AlmaLinux 9 VM using host CPU passthrough.
+  2. Provisions a fresh Copy-on-Write AlmaLinux 10 VM using host CPU passthrough.
   3. Runs setup_remote_server.sh to deploy SSH keys, clone ${GIT_REPO},
      and clone ${VUNDERLAND_REPO} & execute vunderland/settings/setup.sh.
   4. Connects via SSH and executes ~/hft/install.sh (tmux, git, agy CLI).
@@ -200,7 +200,7 @@ print_success "Previous VM destroyed cleanly."
 # ------------------------------------------------------------------------------
 # STEP 2: CREATE FRESH ALMALINUX VM
 # ------------------------------------------------------------------------------
-print_header "STEP 2: CREATING FRESH ALMALINUX 9 VM VIA CLOUD-INIT"
+print_header "STEP 2: CREATING FRESH ALMALINUX 10 VM VIA CLOUD-INIT"
 
 print_info "Provisioning new VM from base image with host CPU topology..."
 (

@@ -28,7 +28,7 @@ Built for **multi-NUMA bare-metal production servers**, physical **Intel 10Gbps 
 4. [BIOS / UEFI Firmware Configuration](#-bios--uefi-firmware-configuration-amd-ryzen-9-9950x--x870e)
 5. [GRUB / Kernel Boot Parameters](#-grub--kernel-boot-parameters)
 6. [Automated Remote Server Provisioning](#-automated-remote-server-provisioning)
-7. [Simulation Environment Setup (AlmaLinux 9 on KVM)](#-simulation-environment-setup-almalinux-9-on-kvm)
+7. [Simulation Environment Setup (AlmaLinux 10 on KVM)](#-simulation-environment-setup-almalinux-10-on-kvm)
 8. [The Top 10 Runtime Kernel & OS Tunings](#-the-top-10-runtime-kernel--os-tunings)
 9. [Modern Kernel-Bypass Networking (AF_XDP on Intel 10GbE)](#-modern-kernel-bypass-networking-af_xdp-on-intel-10gbe)
 10. [Step-by-Step Execution Guide (`hft_tuning.sh`)](#-step-by-step-execution-guide-hft_tuningsh)
@@ -72,7 +72,7 @@ hft/
 ├── recreate_simulation.sh             # One-shot script to destroy, rebuild, provision VM & run install.sh
 ├── setup_remote_server.sh             # Automated remote host deployment & toolchain installer
 ├── simulation/
-│   ├── setup_simulation.sh            # Automated AlmaLinux 9 KVM VM creator via cloud-init
+│   ├── setup_simulation.sh            # Automated AlmaLinux 10 KVM VM creator via cloud-init
 │   ├── recreate_simulation.sh -> ../recreate_simulation.sh
 │   ├── user-data                      # Cloud-init configuration for VM initialization
 │   ├── meta-data                      # Instance metadata (hostname: hft-sim)
@@ -354,14 +354,14 @@ Host trading-srv01
 
 ---
 
-## 🧪 Simulation Environment Setup (AlmaLinux 9 on KVM)
+## 🧪 Simulation Environment Setup (AlmaLinux 10 on KVM)
 
 To validate scripts, AF_XDP ring buffers, and sysctl routines before deploying to live hardware, a fully automated KVM simulation is included.
 
 ### Launching and Managing the Simulation VM
 ```bash
 cd simulation
-./setup_simulation.sh create   # Spin up fresh AlmaLinux 9 VM (~10s)
+./setup_simulation.sh create   # Spin up fresh AlmaLinux 10 VM (~10s)
 ./setup_simulation.sh status   # Check VM run state and assigned IP
 ./setup_simulation.sh ssh      # Log directly into the running VM
 ./setup_simulation.sh sync     # Pull benchmark results into local ./results/
@@ -382,7 +382,7 @@ For a completely automated, zero-touch tear-down and rebuild of the AlmaLinux si
 
 #### What the Recreate Pipeline Automates:
 1. **VM Teardown**: Calls `setup_simulation.sh destroy` to terminate `hft-alma`, undefine the domain, and erase the temporary copy-on-write disk overlay.
-2. **Pristine Rebuild**: Calls `setup_simulation.sh create` to spin up a fresh AlmaLinux 9 VM from base image with host CPU/cache passthrough and cloud-init SSH injection.
+2. **Pristine Rebuild**: Calls `setup_simulation.sh create` to spin up a fresh AlmaLinux 10 VM from base image with host CPU/cache passthrough and cloud-init SSH injection.
 3. **Remote Server Toolchain Provisioning**: Runs [`setup_remote_server.sh`](file:///home/neville/hft/setup_remote_server.sh) to:
    - Synchronize local SSH credentials so the VM can pull from private Git repositories.
    - Enable AlmaLinux CRB (CodeReady Linux Builder) and EPEL package repositories.
@@ -399,7 +399,7 @@ For a completely automated, zero-touch tear-down and rebuild of the AlmaLinux si
 ---
 
 ### Simulation Specifics
-- **OS**: AlmaLinux 9 (GenericCloud QCOW2 image)
+- **OS**: AlmaLinux 10 (GenericCloud QCOW2 image)
 - **Networking**: Bridged NAT with static IP (`192.168.122.210`)
 - **Cloud-Init**: Injects local SSH keys and provisions user `neville` with passwordless sudo.
 - **SSH Alias**: Connect instantly via `ssh hft-sim`.
