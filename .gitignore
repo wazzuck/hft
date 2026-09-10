@@ -19,3 +19,6 @@ bak
 *log
 *mypy*
 *report*
+
+# Preserve benchmark results and configuration references
+!results/**
