@@ -1413,7 +1413,7 @@ show_grub_parameters() {
     echo -e "     • Cores $trading_cores    : ${GREEN}Trading Cores${NC} (Isolated, tickless, zero-overhead)"
     echo ""
 
-    local grub_line="isolcpus=managed_irq,domain,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcu_nocb_poll rcupdate.rcu_normal_after_boot=1 skew_tick=1 cpuidle.off=1 processor.max_cstate=0 idle=poll amd_pstate=disable intel_pstate=disable clocksource=tsc tsc=reliable nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=1G hugepagesz=1G hugepages=${hp_count} pcie_aspm=off mitigations=off systemd.cpu_affinity=0 irqaffinity=0 iommu=off"
+    local grub_line="isolcpus=managed_irq,domain,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcu_nocb_poll rcupdate.rcu_normal_after_boot=1 skew_tick=1 cpuidle.off=1 processor.max_cstate=0 idle=poll amd_pstate=disable intel_pstate=disable clocksource=tsc tsc=reliable nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=1G hugepagesz=1G hugepages=${hp_count} pcie_aspm=off mitigations=off systemd.cpu_affinity=0 irqaffinity=0 iommu=pt"
 
     echo -e "${YELLOW}${BOLD}MASTER COMBINED GRUB_CMDLINE_LINUX STRING:${NC}"
     echo -e "${WHITE}${BOLD}--------------------------------------------------------------------------------${NC}"
@@ -1747,7 +1747,7 @@ apply_grub_parameters() {
         hp_count=8
     fi
 
-    local grub_line="isolcpus=managed_irq,domain,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcu_nocb_poll rcupdate.rcu_normal_after_boot=1 skew_tick=1 cpuidle.off=1 processor.max_cstate=0 idle=poll amd_pstate=disable intel_pstate=disable clocksource=tsc tsc=reliable nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=1G hugepagesz=1G hugepages=${hp_count} pcie_aspm=off mitigations=off systemd.cpu_affinity=0 irqaffinity=0 iommu=off"
+    local grub_line="isolcpus=managed_irq,domain,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcu_nocb_poll rcupdate.rcu_normal_after_boot=1 skew_tick=1 cpuidle.off=1 processor.max_cstate=0 idle=poll amd_pstate=disable intel_pstate=disable clocksource=tsc tsc=reliable nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=1G hugepagesz=1G hugepages=${hp_count} pcie_aspm=off mitigations=off systemd.cpu_affinity=0 irqaffinity=0 iommu=pt"
 
     print_info "Detected $phys_cores Physical Cores. Core isolation mask set to: Cores $trading_cores"
     print_info "Allocating $hp_count x 1GB hugepages ($hp_count GB DRAM)."
@@ -1976,7 +1976,7 @@ check_all_configs() {
         "mitigations=off:Disables KPTI & Speculative Barriers:none"
         "systemd.cpu_affinity=0:Pins OS Systemd Daemons to Core 0:none"
         "irqaffinity=0:Pins Boot Hardware IRQs to Core 0:none"
-        "iommu=off:Disables IOMMU DMA Translation:none"
+        "iommu=pt:Disables IOMMU DMA Translation:none"
     )
 
     local boot_pass=0
