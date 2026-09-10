@@ -79,11 +79,12 @@ hft/
 │   ├── hft_tuning.sh -> ../hft_tuning.sh
 │   └── setup_remote_server.sh -> ../setup_remote_server.sh
 ├── results/                           # Timestamped nanosecond latency benchmark logs
-│   ├── <CPU_MODEL>/                   # Automated per-CPU results directories (e.g. AMD_Ryzen_9_9900X/)
+│   ├── <CPU_MODEL>_<DATE>_<TIME>/     # Automated run sessions (e.g. AMD_Ryzen_9_9900X_20260910_005443/)
 │   │   ├── BENCHMARK_REPORT.md        # Comprehensive platform benchmark & tuning report
-│   │   ├── before_latency_latest.txt  # Latest baseline benchmark metrics
-│   │   ├── after_latency_latest.txt   # Latest post-tuning benchmark metrics
-│   │   └── *_latency_*.txt            # Historical run archives
+│   │   ├── before_latency_latest.txt  # Session baseline benchmark metrics
+│   │   ├── after_latency_latest.txt   # Session post-tuning benchmark metrics
+│   │   └── *_latency_*.txt            # Timestamped latency archives
+│   ├── <CPU_MODEL>_latest -> ...      # Convenience symlink to latest session for this CPU
 │   └── hft_grub_parameters_reference.txt # Master kernel boot parameter reference
 ├── lab01-baseline/                    # Reference latency baselines & labs
 └── lab02-cpp-rust-toolchain/          # Low-latency C++20 & Rust compiler development setup

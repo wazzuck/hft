@@ -47,14 +47,18 @@ CPU_DIR_NAME="$(echo "$CPU_RAW_NAME" | sed -E -e 's/\([R|TM]+\)//g' -e 's/([0-9]
 [ -z "$CPU_DIR_NAME" ] && CPU_DIR_NAME="$(echo "$CPU_RAW_NAME" | sed -e 's/[^a-zA-Z0-9._-]/_/g' -e 's/__*/_/g' -e 's/^_//' -e 's/_$//')"
 [ -z "$CPU_DIR_NAME" ] && CPU_DIR_NAME="Generic_CPU"
 
-RESULTS_DIR="$BASE_RESULTS_DIR/$CPU_DIR_NAME"
-mkdir -p "$RESULTS_DIR" 2>/dev/null || RESULTS_DIR="/tmp/$CPU_DIR_NAME"
+# Auto-generate results folder with CPU model, date, and time: e.g. results/AMD_Ryzen_9_9900X_20260910_005443
+SESSION_DIR_NAME="${CPU_DIR_NAME}_${TIMESTAMP}"
+RESULTS_DIR="$BASE_RESULTS_DIR/$SESSION_DIR_NAME"
+mkdir -p "$RESULTS_DIR" 2>/dev/null || RESULTS_DIR="/tmp/$SESSION_DIR_NAME"
 mkdir -p "$RESULTS_DIR" 2>/dev/null || RESULTS_DIR="/tmp"
 
-# Create symlink for full CPU model name if different (e.g. AMD_Ryzen_9_9900X_12-Core_Processor -> AMD_Ryzen_9_9900X)
-CPU_FULL_NAME="$(echo "$CPU_RAW_NAME" | sed -E -e 's/\([R|TM]+\)//g' -e 's/[^a-zA-Z0-9._-]/_/g' -e 's/__*/_/g' -e 's/^_//' -e 's/_$//')"
-if [ -n "$CPU_FULL_NAME" ] && [ "$CPU_FULL_NAME" != "$CPU_DIR_NAME" ] && [ -d "$RESULTS_DIR" ]; then
-    ln -sfn "$CPU_DIR_NAME" "$BASE_RESULTS_DIR/$CPU_FULL_NAME" 2>/dev/null || true
+# Maintain convenience symlinks:
+# 1. results/<CPU_NAME>_latest -> latest timestamped run for this CPU
+# 2. results/<CPU_NAME>        -> latest timestamped run for this CPU
+if [ -d "$RESULTS_DIR" ]; then
+    ln -sfn "$SESSION_DIR_NAME" "$BASE_RESULTS_DIR/${CPU_DIR_NAME}_latest" 2>/dev/null || true
+    ln -sfn "$SESSION_DIR_NAME" "$BASE_RESULTS_DIR/${CPU_DIR_NAME}" 2>/dev/null || true
 fi
 
 BEFORE_FILE="$RESULTS_DIR/before_latency_${TIMESTAMP}.txt"
