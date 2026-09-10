@@ -1061,8 +1061,15 @@ apply_ten_tunings() {
     done
     print_success "All hardware and network IRQs pinned away from trading cores to Core 0."
 
+    # 11. SMT / Hyper-Threading Disabling at Runtime
+    print_subheader "11. SMT / Hyper-Threading Disablement (1 Thread/Core)"
+    if [ -f /sys/devices/system/cpu/smt/control ]; then
+        echo off | sudo tee /sys/devices/system/cpu/smt/control >/dev/null 2>&1 || true
+        print_success "SMT disabled at runtime (/sys/devices/system/cpu/smt/control -> off)."
+    fi
+
     echo ""
-    print_success "All 10 key low-latency configurations successfully applied!"
+    print_success "All key low-latency configurations successfully applied!"
 }
 
 # ------------------------------------------------------------------------------
@@ -1133,9 +1140,15 @@ revert_tunings() {
     sudo systemctl daemon-reload >/dev/null 2>&1 || true
     sudo systemctl unmask irqbalance >/dev/null 2>&1 || true
 
+    # Re-enable SMT if previously disabled
+    if [ -f /sys/devices/system/cpu/smt/control ]; then
+        echo on | sudo tee /sys/devices/system/cpu/smt/control >/dev/null 2>&1 || true
+        print_success "Restored SMT / Hyper-Threading (/sys/devices/system/cpu/smt/control -> on)."
+    fi
+
     # Clean up bootloader args if grubby is installed
     if command -v grubby >/dev/null 2>&1; then
-        local grub_rem="isolcpus nohz nohz_full rcu_nocbs rcu_nocb_poll rcupdate.rcu_normal_after_boot skew_tick cpuidle.off processor.max_cstate idle amd_pstate clocksource tsc nosmt audit mce transparent_hugepage default_hugepagesz hugepagesz hugepages pcie_aspm mitigations"
+        local grub_rem="isolcpus nohz nohz_full rcu_nocbs rcu_nocb_poll rcupdate.rcu_normal_after_boot skew_tick cpuidle.off processor.max_cstate idle amd_pstate intel_pstate clocksource tsc nosmt audit mce transparent_hugepage default_hugepagesz hugepagesz hugepages pcie_aspm mitigations systemd.cpu_affinity irqaffinity iommu"
         sudo grubby --update-kernel=ALL --remove-args="$grub_rem" >/dev/null 2>&1 || true
     fi
 
@@ -1375,21 +1388,32 @@ full_pipeline() {
 show_grub_parameters() {
     print_header "COMBINED HFT GRUB & KERNEL BOOT PARAMETERS REFERENCE"
 
-    local total_cpus
-    total_cpus="$(nproc --all 2>/dev/null || echo "4")"
+    local phys_cores
+    phys_cores="$(lscpu -p=Core 2>/dev/null | grep -v '^#' | sort -u | wc -l)"
+    [ -z "$phys_cores" ] || [ "$phys_cores" -lt 1 ] && phys_cores="$(nproc --all 2>/dev/null || echo "4")"
+    local total_cpus="$phys_cores"
     local numa_nodes
-    numa_nodes="$(lscpu | grep -E "NUMA node\(s\)" | awk -F: '{print $2}' | xargs || echo "2")"
+    numa_nodes="$(lscpu | grep -E "NUMA node\(s\)" | awk -F: '{print $2}' | xargs || echo "1")"
 
-    local trading_cores="1-$((total_cpus - 1))"
-    [ "$total_cpus" -le 1 ] && trading_cores="0"
+    local trading_cores="1-$((phys_cores - 1))"
+    [ "$phys_cores" -le 1 ] && trading_cores="0"
 
-    echo -e "  ${WHITE}${BOLD}Server Topology:${NC} $total_cpus Cores | $numa_nodes NUMA Node(s)"
+    local total_mem_gb
+    total_mem_gb="$(awk '/MemTotal/ {printf "%d", $2/(1024*1024)}' /proc/meminfo 2>/dev/null || echo "16")"
+    local hp_count=16
+    if [ "$total_mem_gb" -lt 32 ]; then
+        hp_count=2
+    elif [ "$total_mem_gb" -lt 64 ]; then
+        hp_count=8
+    fi
+
+    echo -e "  ${WHITE}${BOLD}Server Topology:${NC} $phys_cores Physical Cores | $numa_nodes NUMA Node(s) | ${total_mem_gb}GB RAM"
     echo -e "  ${WHITE}${BOLD}Core Partitioning Strategy:${NC}"
-    echo -e "     • Node 0 / Core 0    : ${CYAN}Housekeeping${NC} (OS daemons, IRQs, disk I/O, timer ticks)"
-    echo -e "     • Node 1 / Cores $trading_cores : ${GREEN}Trading Cores${NC} (Isolated, tickless, zero-overhead)"
+    echo -e "     • Core 0          : ${CYAN}Housekeeping${NC} (OS daemons, IRQs, disk I/O, timer ticks)"
+    echo -e "     • Cores $trading_cores    : ${GREEN}Trading Cores${NC} (Isolated, tickless, zero-overhead)"
     echo ""
 
-    local grub_line="isolcpus=managed_irq,domain,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcu_nocb_poll rcupdate.rcu_normal_after_boot=1 skew_tick=1 cpuidle.off=1 processor.max_cstate=0 idle=poll amd_pstate=disable clocksource=tsc tsc=reliable nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=1G hugepagesz=1G hugepages=16 pcie_aspm=off mitigations=off"
+    local grub_line="isolcpus=managed_irq,domain,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcu_nocb_poll rcupdate.rcu_normal_after_boot=1 skew_tick=1 cpuidle.off=1 processor.max_cstate=0 idle=poll amd_pstate=disable intel_pstate=disable clocksource=tsc tsc=reliable nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=1G hugepagesz=1G hugepages=${hp_count} pcie_aspm=off mitigations=off systemd.cpu_affinity=0 irqaffinity=0 iommu=off"
 
     echo -e "${YELLOW}${BOLD}MASTER COMBINED GRUB_CMDLINE_LINUX STRING:${NC}"
     echo -e "${WHITE}${BOLD}--------------------------------------------------------------------------------${NC}"
@@ -1707,14 +1731,26 @@ apply_grub_parameters() {
     local auto_reboot="${1:-prompt}"
     print_header "APPLYING MASTER HFT KERNEL PARAMETERS TO BOOTLOADER"
 
-    local total_cpus
-    total_cpus="$(nproc --all 2>/dev/null || echo "4")"
-    local trading_cores="1-$((total_cpus - 1))"
-    [ "$total_cpus" -le 1 ] && trading_cores="0"
+    local phys_cores
+    phys_cores="$(lscpu -p=Core 2>/dev/null | grep -v '^#' | sort -u | wc -l)"
+    [ -z "$phys_cores" ] || [ "$phys_cores" -lt 1 ] && phys_cores="$(nproc --all 2>/dev/null || echo "4")"
+    local total_cpus="$phys_cores"
+    local trading_cores="1-$((phys_cores - 1))"
+    [ "$phys_cores" -le 1 ] && trading_cores="0"
 
-    local grub_line="isolcpus=managed_irq,domain,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcu_nocb_poll rcupdate.rcu_normal_after_boot=1 skew_tick=1 cpuidle.off=1 processor.max_cstate=0 idle=poll amd_pstate=disable clocksource=tsc tsc=reliable nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=1G hugepagesz=1G hugepages=16 pcie_aspm=off mitigations=off"
+    local total_mem_gb
+    total_mem_gb="$(awk '/MemTotal/ {printf "%d", $2/(1024*1024)}' /proc/meminfo 2>/dev/null || echo "16")"
+    local hp_count=16
+    if [ "$total_mem_gb" -lt 32 ]; then
+        hp_count=2
+    elif [ "$total_mem_gb" -lt 64 ]; then
+        hp_count=8
+    fi
 
-    print_info "Detected $total_cpus CPUs. Core isolation mask set to: Cores $trading_cores"
+    local grub_line="isolcpus=managed_irq,domain,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcu_nocb_poll rcupdate.rcu_normal_after_boot=1 skew_tick=1 cpuidle.off=1 processor.max_cstate=0 idle=poll amd_pstate=disable intel_pstate=disable clocksource=tsc tsc=reliable nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=1G hugepagesz=1G hugepages=${hp_count} pcie_aspm=off mitigations=off systemd.cpu_affinity=0 irqaffinity=0 iommu=off"
+
+    print_info "Detected $phys_cores Physical Cores. Core isolation mask set to: Cores $trading_cores"
+    print_info "Allocating $hp_count x 1GB hugepages ($hp_count GB DRAM)."
     print_info "Applying master boot string..."
 
     local applied=false
@@ -1757,6 +1793,12 @@ apply_grub_parameters() {
         print_error "Could not automatically identify bootloader utility (grubby or update-grub)."
         print_info "Please manually append the parameters to /etc/default/grub (see Option [8] for string)."
     else
+        # Configure TuneD cpu-partitioning if file exists
+        if [ -f /etc/tuned/cpu-partitioning-variables.conf ]; then
+            sudo sed -i "s|^isolated_cores=.*|isolated_cores=${trading_cores}|" /etc/tuned/cpu-partitioning-variables.conf 2>/dev/null || true
+            print_info "Configured /etc/tuned/cpu-partitioning-variables.conf with isolated_cores=${trading_cores}"
+        fi
+
         # Automatically install Reboot Persistence Engine so runtime configs are preserved!
         persist_all_tunings
         
@@ -1932,6 +1974,9 @@ check_all_configs() {
         "pcie_aspm=off:Disables PCIe Active State Power Mgmt:none"
         "audit=0:Strips Syscall Audit Hooks (-30ns):none"
         "mitigations=off:Disables KPTI & Speculative Barriers:none"
+        "systemd.cpu_affinity=0:Pins OS Systemd Daemons to Core 0:none"
+        "irqaffinity=0:Pins Boot Hardware IRQs to Core 0:none"
+        "iommu=off:Disables IOMMU DMA Translation:none"
     )
 
     local boot_pass=0
