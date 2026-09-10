@@ -424,12 +424,6 @@ print(json.dumps(data, indent=2))
 " > "$out_json" 2>/dev/null || true
     fi
 
-    # Also maintain copies in base results directory if segregated
-    if [ -n "$BASE_RESULTS_DIR" ] && [ "$out_dir" != "$BASE_RESULTS_DIR" ]; then
-        cp -f "$out_txt" "$BASE_RESULTS_DIR/$(basename "$out_txt")" 2>/dev/null || true
-        [ -f "$out_json" ] && cp -f "$out_json" "$BASE_RESULTS_DIR/$(basename "$out_json")" 2>/dev/null || true
-    fi
-
     print_success "Host hardware profile captured:"
     echo "     • Text Specification   : $out_txt"
     [ -f "$out_json" ] && echo "     • Machine-Readable JSON: $out_json"
@@ -935,10 +929,6 @@ run_benchmark_pass() {
         echo "CYCLIC_MAX_NS=$c_max"
     } > "$outfile"
     cp -f "$outfile" "$linkfile" 2>/dev/null || true
-    if [ -n "$BASE_RESULTS_DIR" ] && [ "$RESULTS_DIR" != "$BASE_RESULTS_DIR" ]; then
-        cp -f "$outfile" "$BASE_RESULTS_DIR/$(basename "$outfile")" 2>/dev/null || true
-        cp -f "$outfile" "$BASE_RESULTS_DIR/$(basename "$linkfile")" 2>/dev/null || true
-    fi
 
     # Display results
     print_subheader "${phase} Nanosecond Latency Results"
