@@ -236,6 +236,206 @@ EOF_NS_EXPLAIN
 }
 
 # ------------------------------------------------------------------------------
+# 4.5 EXHAUSTIVE HOST HARDWARE SPECIFICATION & TOPOLOGY INTROSPECTION ENGINE
+# ------------------------------------------------------------------------------
+collect_host_hardware_profile() {
+    local out_dir="${1:-$RESULTS_DIR}"
+    mkdir -p "$out_dir" 2>/dev/null || true
+    local out_txt="$out_dir/host_hardware_profile.txt"
+    local out_json="$out_dir/host_hardware_profile.json"
+
+    print_info "Collecting exhaustive host hardware profile..."
+
+    # System & DMI Metadata
+    local sys_vendor="$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || echo "Unknown")"
+    local prod_name="$(cat /sys/class/dmi/id/product_name 2>/dev/null || echo "Unknown")"
+    local prod_ver="$(cat /sys/class/dmi/id/product_version 2>/dev/null || echo "Unknown")"
+    local board_name="$(cat /sys/class/dmi/id/board_name 2>/dev/null || echo "Unknown")"
+    local board_vendor="$(cat /sys/class/dmi/id/board_vendor 2>/dev/null || echo "Unknown")"
+    local bios_vendor="$(cat /sys/class/dmi/id/bios_vendor 2>/dev/null || echo "Unknown")"
+    local bios_version="$(cat /sys/class/dmi/id/bios_version 2>/dev/null || echo "Unknown")"
+    local bios_date="$(cat /sys/class/dmi/id/bios_date 2>/dev/null || echo "Unknown")"
+
+    # CPU Metadata
+    local cpu_model="$(lscpu 2>/dev/null | awk -F: '/Model name/ {print $2; exit}' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' || awk -F: '/model name/ {print $2; exit}' /proc/cpuinfo 2>/dev/null || echo "Unknown")"
+    local cpu_arch="$(uname -m)"
+    local cpu_sockets="$(lscpu 2>/dev/null | awk -F: '/Socket\(s\)/ {print $2}' | xargs || echo "1")"
+    local cpu_cores="$(lscpu 2>/dev/null | awk -F: '/Core\(s\) per socket/ {print $2}' | xargs || echo "1")"
+    local cpu_threads="$(lscpu 2>/dev/null | awk -F: '/Thread\(s\) per core/ {print $2}' | xargs || echo "1")"
+    local cpu_total="$(nproc --all 2>/dev/null || echo "1")"
+    local cpu_online="$(cat /sys/devices/system/cpu/online 2>/dev/null || echo "all")"
+    local cpu_offline="$(cat /sys/devices/system/cpu/offline 2>/dev/null || echo "none")"
+    local cpu_max_mhz="$(lscpu 2>/dev/null | awk -F: '/CPU max MHz/ {print $2}' | xargs || echo "unknown")"
+    local numa_nodes="$(lscpu 2>/dev/null | awk -F: '/NUMA node\(s\)/ {print $2}' | xargs || echo "1")"
+    local l1d_cache="$(lscpu 2>/dev/null | awk -F: '/L1d cache/ {print $2}' | xargs || echo "unknown")"
+    local l1i_cache="$(lscpu 2>/dev/null | awk -F: '/L1i cache/ {print $2}' | xargs || echo "unknown")"
+    local l2_cache="$(lscpu 2>/dev/null | awk -F: '/L2 cache/ {print $2}' | xargs || echo "unknown")"
+    local l3_cache="$(lscpu 2>/dev/null | awk -F: '/L3 cache/ {print $2}' | xargs || echo "unknown")"
+    local cpu_gov="$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "unknown")"
+    local cstate_drv="$(cat /sys/devices/system/cpu/cpuidle/current_driver 2>/dev/null || echo "none")"
+    local smt_state="$(cat /sys/devices/system/cpu/smt/control 2>/dev/null || echo "unknown")"
+
+    # Memory Metadata
+    local mem_total_kb="$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo "0")"
+    local mem_avail_kb="$(awk '/MemAvailable/ {print $2}' /proc/meminfo 2>/dev/null || echo "0")"
+    local mem_total_gb="$(awk -v kb="$mem_total_kb" 'BEGIN {printf "%.1f", kb/1024/1024}')"
+    local swap_total_kb="$(awk '/SwapTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo "0")"
+
+    # OS / Kernel
+    local os_pretty="$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || echo "Linux")"
+    local kernel_ver="$(uname -r)"
+    local kernel_cmdline="$(cat /proc/cmdline 2>/dev/null)"
+    local clocksource="$(cat /sys/devices/system/clocksource/clocksource0/current_clocksource 2>/dev/null || echo "unknown")"
+    local host_name="$(hostname 2>/dev/null || echo "unknown")"
+
+    # Write Exhaustive Text Specification
+    cat << EOF_TXT > "$out_txt"
+================================================================================
+HOST SYSTEM & HARDWARE SPECIFICATION PROFILE
+================================================================================
+Capture Timestamp    : $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+Host Name            : $host_name
+Operating System     : $os_pretty
+Linux Kernel         : $kernel_ver ($cpu_arch)
+Active Clocksource   : $clocksource
+Kernel Command Line  : $kernel_cmdline
+
+--------------------------------------------------------------------------------
+1. SYSTEM & MOTHERBOARD
+--------------------------------------------------------------------------------
+System Manufacturer  : $sys_vendor
+Product Model Name   : $prod_name
+Product Version      : $prod_ver
+Motherboard Model    : $board_name (Vendor: $board_vendor)
+BIOS Firmware Vendor : $bios_vendor
+BIOS Firmware Version: $bios_version
+BIOS Release Date    : $bios_date
+
+--------------------------------------------------------------------------------
+2. PROCESSOR ARCHITECTURE & TOPOLOGY
+--------------------------------------------------------------------------------
+CPU Model String     : $cpu_model
+Instruction Arch     : $cpu_arch
+Physical Sockets     : $cpu_sockets
+Physical Cores/Socket: $cpu_cores
+Threads per Core     : $cpu_threads
+Total Logical Cores  : $cpu_total
+Online CPU Mask      : $cpu_online
+Offline CPU Mask     : $cpu_offline
+Max Rated Frequency  : ${cpu_max_mhz} MHz
+Scaling Governor     : $cpu_gov
+SMT Control State    : $smt_state
+CPU Idle Driver      : $cstate_drv
+NUMA Architecture    : $numa_nodes NUMA Node(s)
+L1 Data Cache        : $l1d_cache
+L1 Instruction Cache : $l1i_cache
+L2 Cache             : $l2_cache
+L3 Cache             : $l3_cache
+Hardware TSC Features: $(grep -q "constant_tsc" /proc/cpuinfo 2>/dev/null && echo "constant_tsc" || echo "") $(grep -q "nonstop_tsc" /proc/cpuinfo 2>/dev/null && echo "nonstop_tsc" || echo "")
+
+--------------------------------------------------------------------------------
+3. MEMORY SUBSYSTEM & PHYSICAL DIMMS
+--------------------------------------------------------------------------------
+Total System DRAM    : ${mem_total_gb} GB (${mem_total_kb} kB)
+Available DRAM       : $(awk -v kb="$mem_avail_kb" 'BEGIN {printf "%.1f", kb/1024/1024}') GB
+Configured Swap Space: $(awk -v kb="$swap_total_kb" 'BEGIN {printf "%.1f", kb/1024/1024}') GB
+
+Physical DIMM Modules (DMI):
+$(sudo dmidecode -t memory 2>/dev/null | grep -E "Locator:|Size: [0-9]|Type: DDR|Speed: [0-9]|Manufacturer:|Part Number:" | head -30 || echo "  (DMI memory information not accessible)")
+
+--------------------------------------------------------------------------------
+4. NETWORK CONTROLLERS & PHYSICAL INTERFACES
+--------------------------------------------------------------------------------
+PCI Network Controllers:
+$(lspci -nnk 2>/dev/null | grep -E -A 3 "Ethernet controller" || echo "  (None detected)")
+
+Active Network Interfaces:
+$(ip -br a 2>/dev/null || echo "  (Unable to query ip)")
+
+--------------------------------------------------------------------------------
+5. STORAGE & NVME SUBSYSTEM
+--------------------------------------------------------------------------------
+PCI Storage Controllers:
+$(lspci -nnk 2>/dev/null | grep -E -A 3 "Non-Volatile memory" || echo "  (None detected)")
+
+Block Storage Devices:
+$(lsblk -o NAME,SIZE,TYPE,FSTYPE,MODEL,MOUNTPOINTS 2>/dev/null || echo "  (Unable to query lsblk)")
+
+--------------------------------------------------------------------------------
+6. PCIE BUS SUBSYSTEM & VIRTUALIZATION
+--------------------------------------------------------------------------------
+PCIe ASPM Link Policy: $(cat /sys/module/pcie_aspm/parameters/policy 2>/dev/null || echo "N/A")
+IOMMU Hardware State : $([ -d /sys/class/iommu ] && ls -d /sys/class/iommu/* 2>/dev/null | head -1 || echo "Disabled / Bypass")
+================================================================================
+EOF_TXT
+
+    # Generate Machine-Readable JSON Profile
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c "
+import json
+data = {
+    \"capture_timestamp_utc\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\",
+    \"hostname\": \"$host_name\",
+    \"os\": {
+        \"pretty_name\": \"$os_pretty\",
+        \"kernel_release\": \"$kernel_ver\",
+        \"architecture\": \"$cpu_arch\",
+        \"clocksource\": \"$clocksource\",
+        \"cmdline\": \"$kernel_cmdline\"
+    },
+    \"system\": {
+        \"manufacturer\": \"$sys_vendor\",
+        \"product_name\": \"$prod_name\",
+        \"product_version\": \"$prod_ver\",
+        \"motherboard_model\": \"$board_name\",
+        \"motherboard_vendor\": \"$board_vendor\",
+        \"bios_vendor\": \"$bios_vendor\",
+        \"bios_version\": \"$bios_version\",
+        \"bios_release_date\": \"$bios_date\"
+    },
+    \"processor\": {
+        \"model\": \"$cpu_model\",
+        \"sockets\": \"$cpu_sockets\",
+        \"cores_per_socket\": \"$cpu_cores\",
+        \"threads_per_core\": \"$cpu_threads\",
+        \"total_logical_cpus\": \"$cpu_total\",
+        \"online_cpus\": \"$cpu_online\",
+        \"offline_cpus\": \"$cpu_offline\",
+        \"max_frequency_mhz\": \"$cpu_max_mhz\",
+        \"scaling_governor\": \"$cpu_gov\",
+        \"smt_control\": \"$smt_state\",
+        \"cstate_driver\": \"$cstate_drv\",
+        \"numa_nodes\": \"$numa_nodes\",
+        \"cache\": {
+            \"l1d\": \"$l1d_cache\",
+            \"l1i\": \"$l1i_cache\",
+            \"l2\": \"$l2_cache\",
+            \"l3\": \"$l3_cache\"
+        }
+    },
+    \"memory\": {
+        \"total_gb\": \"$mem_total_gb\",
+        \"total_kb\": \"$mem_total_kb\",
+        \"available_kb\": \"$mem_avail_kb\",
+        \"swap_total_kb\": \"$swap_total_kb\"
+    }
+}
+print(json.dumps(data, indent=2))
+" > "$out_json" 2>/dev/null || true
+    fi
+
+    # Also maintain copies in base results directory if segregated
+    if [ -n "$BASE_RESULTS_DIR" ] && [ "$out_dir" != "$BASE_RESULTS_DIR" ]; then
+        cp -f "$out_txt" "$BASE_RESULTS_DIR/$(basename "$out_txt")" 2>/dev/null || true
+        [ -f "$out_json" ] && cp -f "$out_json" "$BASE_RESULTS_DIR/$(basename "$out_json")" 2>/dev/null || true
+    fi
+
+    print_success "Host hardware profile captured:"
+    echo "     • Text Specification   : $out_txt"
+    [ -f "$out_json" ] && echo "     • Machine-Readable JSON: $out_json"
+}
+
+# ------------------------------------------------------------------------------
 # 5. EMBEDDED C NANOSECOND MICROBENCHMARK ENGINE
 # ------------------------------------------------------------------------------
 ensure_benchmark_binary() {
@@ -698,6 +898,7 @@ run_benchmark_pass() {
     print_header "STEP: RUNNING ${phase} BENCHMARK (NANOSECOND RESOLUTION)"
 
     ensure_benchmark_binary
+    collect_host_hardware_profile "$RESULTS_DIR"
 
     # Determine measurement core
     local total_cpus
@@ -2292,6 +2493,11 @@ main() {
             print_banner
             persist_all_tunings
             ;;
+        --host-profile|--host-info)
+            print_banner
+            collect_host_hardware_profile "$RESULTS_DIR"
+            cat "$RESULTS_DIR/host_hardware_profile.txt"
+            ;;
         --verify|--check|-9|-c)
             print_banner
             check_all_configs
@@ -2304,6 +2510,7 @@ main() {
             echo "  --after        Run post-tuning after benchmark"
             echo "  --learn        Run learning mode (compare and explain)"
             echo "  --full         Run entire pipeline (1 -> 2 -> 3 -> 4)"
+            echo "  --host-profile Capture and display exhaustive host & hardware specification profile"
             echo "  --revert       Revert tunings back to baseline and remove persistence"
             echo "  --check-ns     Check hardware nanosecond resolution"
             echo "  --grub         Display master GRUB / kernel boot parameter reference"
