@@ -143,47 +143,84 @@ Due to the modular dual-CCD architecture (2 Core Complex Dies interconnected via
 
 ### 1. Accessing Low Latency High Frequency Trading Platform UEFI / BIOS Setup
 1. Reboot the server.
-2. During the early Power-On Self-Test (POST) screen, repeatedly press `<DEL>` or `<F2>` until the UEFI BIOS Utility launches.
-3. Switch to **Advanced Mode** (usually `F7`).
+2. During the early Power-On Self-Test (POST) screen, repeatedly press `<DEL>` or `<F2>` until the **Aptio Setup Utility (AMI BIOS)** launches.
+3. If running in graphical/EZ mode, press `<F7>` to switch to **Advanced Mode** (most IPMI/serial console Aptio installations default directly to classic text-mode Advanced Mode).
 
 ---
 
-### 2. Step-by-Step Low-Latency BIOS Configuration
+### 2. Aptio Setup: AMD Ryzen vs. Enterprise EPYC BIOS Comparison
+
+If you have previously configured enterprise AMD EPYC servers, the **AMI Aptio Setup** on an AMD Ryzen platform will appear significantly simpler and less cluttered. Here is why:
+
+| Architecture Domain | AMD EPYC Aptio Setup (Enterprise Multi-Node) | AMD Ryzen Aptio Setup (AM5 / Single-Socket HFT) | Adjustment for Ryzen HFT |
+| :--- | :--- | :--- | :--- |
+| **NUMA Topology** | Configurable: `NPS0`, `NPS1`, `NPS2`, `NPS4` across 4–12 memory channels | Fixed: 1 NUMA Node / UMA across 2 DDR5 channels | **Omitted**: Do not look for `NPS` or `SRAT` options. |
+| **Sub-NUMA Clustering** | `SNC` / `L3 Cache as NUMA` options | Single unified L3 per 8-core CCD | **Omitted**: Unnecessary on Ryzen. |
+| **Clock Determinism** | Determinism Slider (`Performance` vs `Power`) | Core Performance Boost (CPB) toggle or manual clock multiplier | **Keep Disabled**: Turn CPB/PBO off or lock all-core multiplier. |
+| **Socket Interconnect** | Multi-socket xGMI / UPI link frequency & width | Single AM5 socket | **Omitted**: No inter-socket fabric to tune. |
+| **Idle Power Phases** | C-states / Determinism | `Power Supply Idle Control` | **Set to `Typical Current Idle`**: Prevents VRM voltage drops during trading lulls. |
+| **Core Isolation** | `SMT Control` (Disable) | `SMT Control` (Disable) | **Identical**: Must disable SMT for 1 thread per physical core. |
+| **PCIe Subsystem** | 128 lanes, bifurcation per slot/MCIO | 24–28 lanes, direct CPU PCIe Gen 5 | **Identical**: Disable PCIe ASPM, enable Above 4G & Re-Size BAR. |
+| **DMA Virtualization** | IOMMU (Disable for bare metal) | IOMMU (Disable for bare metal) | **Identical**: Disable to bypass IOTLB overhead. |
+
+---
+
+### 3. AMI Aptio Setup (Aptio V) Navigation Tree
+
+On modern AM5 motherboards (e.g. ASRock Rack, Supermicro, ASUS, MSI) running AMI Aptio Setup, use the arrow keys to navigate the top-level menu tabs:
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Aptio Setup - American Megatrends                        │
+│   Main     Advanced     Chipset / OC     Security     Boot     Save & Exit  │
+└──────┬─────────┬──────────────┬──────────────┬──────────┬───────────┬───────┘
+       │         │              │              │          │           │
+       │         ▼              ▼              │          │           │
+       │  ┌──────────────┐ ┌──────────────┐    │          │           │
+       │  │ AMD CBS      │ │ PCIe / OC    │    │          │           │
+       │  └──────┬───────┘ └──────┬───────┘    │          │           │
+       │         │                │            │          │           │
+       ▼         ▼                ▼            ▼          ▼           ▼
+  [Platform]  [Core Clocks]  [Fabric & Bus] [Passwords] [Boot Order] [Save & Reset]
+```
+
+#### Step-by-Step Aptio Low-Latency Configuration
 
 #### A. CPU Core Isolation & Multithreading (`Advanced` → `CPU Configuration`)
-| BIOS Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
+| Aptio Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
 | :--- | :--- | :--- | :--- |
-| `Advanced` → `CPU Configuration` | **SMT Control** | **Disable** | Disables Simultaneous Multi-Threading. SMT sibling threads compete for L1/L2 caches and execution ALUs. Disabling provides 16 dedicated physical cores with zero noisy-neighbor stalls. |
+| `Advanced` → `CPU Configuration` | **SMT Control** | **Disable** | Disables Simultaneous Multi-Threading. SMT sibling threads compete for L1/L2 caches and execution ALUs. Disabling provides dedicated physical cores with zero noisy-neighbor stalls. |
 
 #### B. AMD CBS → CPU Common Options (Sleep States & Clocks)
-| BIOS Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
+| Aptio Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
 | :--- | :--- | :--- | :--- |
 | `Advanced` → `AMD CBS` → `CPU Common Options` | **Core Performance Boost (CPB)** | **Disabled** | CPB boosts clocks opportunistically, but the dynamic voltage/frequency transitions cause phase-locked loop (PLL) relocking jitter. Disabling locks cores to a deterministic base frequency. |
 | `Advanced` → `AMD CBS` → `CPU Common Options` | **Global C-state Control** | **Disabled** | Hard-disables C1, C1E, and C2 sleep states in hardware. Zen cores never enter sleep modes, maintaining 100% C0 execution readiness. |
+| `Advanced` → `AMD CBS` → `CPU Common Options` | **Power Supply Idle Control** | **Typical Current Idle** | Prevents motherboard VRMs and CPU power planes from dropping down into low-current sleep states during market lulls. Eliminates power-rail wake-up latency when high-volume packet bursts hit the NIC. |
 | `Advanced` → `AMD CBS` → `CPU Common Options` | **Streaming Stores Control** | **Enabled** | Accelerates non-temporal store instructions to write directly to DRAM. |
 
-#### C. Extreme Tweaker / Overclocking (Infinity Fabric & Memory)
-| BIOS Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
+#### C. Extreme Tweaker / OC / Memory (`OC Tweaker` or `Advanced` → `AMD CBS` → `DF Common Options`)
+| Aptio Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
 | :--- | :--- | :--- | :--- |
-| `Extreme Tweaker` / `OC` | **FCLK Frequency** | **Match MCLK (e.g. 2000MHz)** | The Infinity Fabric Clock (FCLK) must run at a 1:1 ratio with the Memory Clock (MCLK). For DDR5-6000, MCLK is 3000MHz, FCLK should be matched tightly (typically maxing around 2000-2200MHz for Zen 5). |
-| `Extreme Tweaker` / `OC` | **UCLK DIV1 MODE** | **UCLK=MEMCLK** | Forces the Unified Memory Controller Clock to run at the same speed as the memory clock, preventing gear-down latency penalties. |
+| `OC Tweaker` / `AMD CBS` | **FCLK Frequency** | **Match MCLK (e.g. 2000MHz)** | The Infinity Fabric Clock (FCLK) should match the Memory Clock (MCLK) tightly (typically 2000–2200MHz for Zen 5 DDR5-6000) to minimize inter-die transfer jitter. |
+| `OC Tweaker` / `AMD CBS` | **UCLK DIV1 MODE** | **UCLK=MEMCLK** | Forces the Unified Memory Controller Clock to run 1:1 with the memory clock, avoiding gear-down latency penalties. |
 
-#### D. PCIe / Bus Subsystem & IOMMU (`Advanced` → `PCIe/PCI/PnP` & `AMD CBS` → `NBIO`)
-| BIOS Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
+#### D. PCIe Subsystem & IOMMU (`Advanced` → `PCI Subsystem Settings` & `AMD CBS` → `NBIO`)
+| Aptio Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
 | :--- | :--- | :--- | :--- |
-| `Advanced` → `PCIe Subsystem Settings` | **PCIe ASPM Support** | **Disabled** | Keeps PCIe lanes locked in active L0 power state, eliminating link wakeup delays for NICs. |
+| `Advanced` → `PCI Subsystem Settings` | **PCIe ASPM Support** | **Disabled** | Keeps PCIe lanes locked in active L0 power state, eliminating link wakeup delays for NICs. |
 | `Advanced` → `AMD CBS` → `NBIO Common Options` | **IOMMU** | **Disabled** | Bare-metal HFT kernels bypass virtualization. Disabling strips away IOTLB page table lookups on packet DMA bursts. |
-| `Advanced` → `PCIe Subsystem Settings` | **Above 4G Decoding** | **Enabled** | Permits 64-bit BAR memory mapping. |
-| `Advanced` → `PCIe Subsystem Settings` | **Re-Size BAR Support** | **Enabled** | Allows mapping large multi-gigabyte NIC buffers directly into user-space. |
+| `Advanced` → `PCI Subsystem Settings` | **Above 4G Decoding** | **Enabled** | Permits 64-bit BAR memory mapping. |
+| `Advanced` → `PCI Subsystem Settings` | **Re-Size BAR Support** | **Enabled** | Allows mapping large multi-gigabyte NIC ring buffers directly into user-space. |
 
 ---
 
-### 3. Saving & Exiting BIOS Setup
+### 4. Saving & Exiting Aptio Setup
 Press `<F10>` (**Save & Exit**), select **Save Changes and Reset**, and press `<Enter>`.
 
 ---
 
-### 4. Post-Boot Linux Verification Commands for AMD Ryzen 9 9950X
+### 5. Post-Boot Linux Verification Commands for AMD Ryzen 9 9950X
 Verify your hardware configuration inside Linux:
 
 ```bash
