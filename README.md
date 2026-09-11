@@ -474,26 +474,7 @@ Follow these exact keystroke sequences mapped directly to the Supermicro H13SRD-
 
 ---
 
-### 4. Supermicro H13SRD-F Low-Latency Settings Reference Matrix
-
-| Supermicro H13SRD-F Menu Path | Setting Name | Optimal Value | Low-Latency Architectural Rationale |
-| :--- | :--- | :--- | :--- |
-| `Advanced` → `CPU Configuration` | **Global C-state Control** | **`[Disabled]`** | Disables C1/C2 sleep states in hardware. Cores stay in C0 with 0ns wake penalty. |
-| `Advanced` → `CPU Configuration` | **PSS Support** | **`[Disabled]`** | Strips ACPI dynamic frequency/voltage scaling tables to prevent clock jitter. |
-| `Advanced` → `CPU Configuration` | **SMT Control** | **`[Disabled]`** | Disables Hyper-Threading. Prevents resource thrashing between sibling threads. |
-| `Advanced` → `CPU Configuration` | **Core Performance Boost** | **`[Disabled]`** | Locks processor to fixed base frequency; eliminates PLL relocking jitter. |
-| `Advanced` → `North Bridge Configuration` | **IOMMU** | **`[Disabled]`** | Bypasses AMD-Vi translation; direct physical DMA eliminates IOTLB stalls. |
-| `Advanced` → `North Bridge Configuration` | **Above 4GB MMIO Limit** | **`[40bit (1TB)]`** | Ensures 64-bit peripheral MMIO address space is correctly mapped. |
-| `Advanced` → `PCIe/PCI/PnP Configuration` | **Above 4G Decoding** | **`[Enabled]`** | Enables 64-bit BAR memory decoding for high-throughput PCIe controllers. |
-| `Advanced` → `PCIe/PCI/PnP Configuration` | **Re-Size BAR** | **`[Enabled]`** | Enables full-aperture direct CPU mapping of device memory. |
-| `Advanced` → `PCIe/PCI/PnP Configuration` | **ASPM Support** | **`[Disabled]`** | Keeps PCIe links locked in L0 active state; eliminates PCIe wake delays. |
-| `Advanced` → `PCIe/PCI/PnP Configuration` | **BME DMA Mitigation** | **`[Disabled]`** | Ensures Bus Master DMA remains active across boot stages. |
-| `Advanced` → `PCIe/PCI/PnP Configuration` | **Relaxed Ordering** | **`[Enabled]`** | Maximizes PCIe transaction throughput by relaxing strict sequential ordering. |
-| `Advanced` → `PCIe/PCI/PnP Configuration` | **No Snoop** | **`[Enabled]`** | Bypasses unnecessary CPU cache snooping for streaming DMA descriptors. |
-
----
-
-### 5. Post-Boot Linux Verification Commands
+### 4. Post-Boot Linux Verification Commands
 
 After booting into Linux, execute these commands to verify that BIOS settings applied successfully:
 
