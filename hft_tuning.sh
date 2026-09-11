@@ -1335,9 +1335,22 @@ EOF_T1
   • Kernel/Hardware Mechanism:
     When an execution thread pauses waiting for data, the CPU microcode enters deep sleep states (C1E, C3, C6, C8),
     powering down clock trees and flushing cache slices. Exiting C6 sleep takes 50 to 150 microseconds!
+    
+    ┌─────────────────────────────────────────────────────────────┐
+    │ CPU C-STATES (Deep Sleep vs Active)                         │
+    ├─────────────┬───────────┬───────────────────┬───────────────┤
+    │ STATE       │ POWER     │ WAKE UP LATENCY   │ HARDWARE STATE│
+    ├─────────────┼───────────┼───────────────────┼───────────────┤
+    │ C0 (Active) │ 100%      │ 0 ns              │ Executing code│
+    │ C1 / C1E    │ Low       │ ~1 - 2 µs         │ Clocks halted │
+    │ C3          │ Very Low  │ ~10 - 50 µs       │ L1/L2 flushed │
+    │ C6          │ Near Zero │ ~50 - 150 µs      │ Core powered off│
+    └─────────────┴───────────┴───────────────────┴───────────────┘
+
   • Multi-NUMA HFT Impact:
-    By registering an exit latency requirement of 0 microseconds with Linux PM QoS, the kernel prevents the
-    silicon from entering any sleep state deeper than active C0 polling.
+    In market data processing, ticks arrive unpredictably. If the CPU enters C6 during a quiet millisecond, 
+    the next arriving tick incurs a 150us wake penalty. By locking PM QoS to 0us, we force the CPU to stay in 
+    C0 (Active), guaranteeing 0ns wake latency and immediate response.
 EOF_T2
 
     echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -1399,51 +1412,85 @@ EOF_T6
   • Kernel/Hardware Mechanism:
     THP attempts to coalesce 4KB pages into 2MB hugepages on the fly via the 'khugepaged' kernel thread.
     When memory fragments, allocations trigger synchronous memory compaction, freezing execution for 10ms to 100ms!
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │ 4KB PAGES vs 2MB HUGEPAGES (TLB Miss Cost)                  │
+    ├─────────────────────────────────────────────────────────────┤
+    │ 4KB PAGE TABLE WALK (4 Levels)                              │
+    │ CPU TLB Miss -> PGD -> PUD -> PMD -> PTE -> Physical RAM    │
+    │ (Requires 4 separate memory reads: ~400ns penalty)          │
+    │                                                             │
+    │ 2MB HUGEPAGE WALK (Fits comfortably in hardware TLB)        │
+    │ CPU TLB Hit -> Physical RAM                                 │
+    │ (0 memory reads for translation: 0ns penalty)               │
+    └─────────────────────────────────────────────────────────────┘
+
   • Multi-NUMA HFT Impact:
-    Eliminates background compaction stalls across NUMA memory zones. (Production systems use static hugetlbfs).
+    Eliminates background compaction stalls. Market data applications should manually pre-allocate static 2MB 
+    hugepages at boot (via hugetlbfs) to guarantee contiguous memory and eliminate TLB misses for large order books,
+    without risking the runtime stalls introduced by THP.
 EOF_T7
 
     echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${WHITE}${BOLD}8. Socket Low-Latency Busy-Polling & Modern Kernel-Bypass (AF_XDP / Zero-Copy)${NC}"
     echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     cat << "EOF_T8"
-  • What it does:
-    Enables active socket busy-polling (busy_poll = 50us) and introduces modern user-space
+  • What it does: Enables active socket busy-polling (busy_poll = 50us) and introduces modern user-space
     kernel-bypass packet dispatch via AF_XDP (XSK Zero-Copy).
-  • Why Top-Tier Funds Choose AF_XDP on Commodity Intel 10Gbps:
-    1. Solarflare EF_VI / OpenOnload: Proprietary to Solarflare/AMD ASICs; will NOT run on Intel NICs.
-    2. Mellanox VMA / Rivermax: Proprietary to Mellanox ConnectX ASICs; will NOT run on Intel NICs.
-    3. DPDK (Data Plane Development Kit): Works on Intel, but unbinds the physical NIC from the Linux
-       kernel driver (via vfio-pci). This breaks Linux kernel networking (SSH, management, PTP/NTP, BGP)
-       unless dedicated secondary management NICs or complex KNI TAP devices exist.
-    4. AF_XDP (eXpress Data Path Sockets):
-       - First-class native zero-copy driver support in Intel 10GbE (ixgbe), 25GbE (i40e), and 100GbE (ice).
-       - Zero-Copy DMA: NIC DMA transfers Ethernet frames directly into user-space UMEM frames.
-       - Coexistence: BPF filters steer UDP market data or order traffic to user-space rings while
-         passing SSH, management, and control traffic through the standard Linux stack (XDP_PASS).
-  • Direct Precursor to FPGA Hardware Architecture:
-    AF_XDP uses four circular lock-free descriptor rings:
-      - Fill Ring      : User supplies empty frame physical addresses to the NIC.
-      - Rx Ring        : NIC deposits packet descriptors directly upon arrival (Zero Syscalls).
-      - Tx Ring        : User deposits outbound order execution descriptors directly to NIC.
-      - Completion Ring: NIC signals hardware transmission completion.
-    This exact 4-ring memory architecture mirrors FPGA PCIe DMA engines (e.g. Xilinx XDMA, QDMA, ExaNIC).
-    Trading algorithms written for AF_XDP rings can be ported directly to FPGA ring buffers with near-zero code change!
+  • Architectural View: Kernel vs AF_XDP
+
+    ┌─────────────────────────────────────────────────────────────────┐
+    │ STANDARD LINUX SOCKETS vs AF_XDP ZERO-COPY                      │
+    ├─────────────────────────────────────────────────────────────────┤
+    │ [STANDARD UDP SOCKET]                   [AF_XDP ZERO-COPY]      │
+    │                                                                 │
+    │ USER SPACE                              USER SPACE              │
+    │ ┌────────────────┐                      ┌────────────────┐      │
+    │ │ Trading Logic  │                      │ Trading Logic  │      │
+    │ │   recvfrom()   │                      │ (Reads UMEM)   │      │
+    │ └──────▲─────────┘                      └──────▲─────────┘      │
+    │ ───────│───────────────────────────────────────│─────────────── │
+    │ KERNEL │ (Context Switch, Copy)                │ (No Copy!)     │
+    │ ┌──────┴─────────┐                      ┌──────┴─────────┐      │
+    │ │ TCP/IP Stack   │                      │ UMEM Ring Buf  │      │
+    │ │ sk_buff alloc  │                      │ (Lock-Free)    │      │
+    │ └──────▲─────────┘                      └──────▲─────────┘      │
+    │ ───────│───────────────────────────────────────│─────────────── │
+    │ HARDWARE                                       │                │
+    │ ┌──────┴─────────┐                      ┌──────┴─────────┐      │
+    │ │ NIC DMA Rx Ring│                      │ NIC DMA Rx Ring│      │
+    │ └────────────────┘                      └────────────────┘      │
+    └─────────────────────────────────────────────────────────────────┘
+
   • Multi-NUMA HFT Impact:
-    Allocating UMEM buffers on the local NUMA node adjacent to the NIC's PCIe bus guarantees
-    that all DMA packet writes and CPU memory accesses occur at local memory speeds (~40ns vs ~100ns remote).
+    By completely bypassing the kernel TCP/IP stack and sk_buff allocations, AF_XDP allows the trading thread to 
+    read packets directly from the NIC's DMA memory in user space, slashing ingestion latency from ~3us down to ~30ns.
 EOF_T8
 
     echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${WHITE}${BOLD}9. TCP Slow Start After Idle Disabled (tcp_slow_start_after_idle = 0)${NC}"
     echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     cat << "EOF_T9"
-  • What it does: Prevents TCP from resetting its congestion window (cwnd) after idle periods.
+  • What it does: Prevents TCP from resetting its congestion window (cwnd) after idle periods and disables Autocorking.
   • Kernel/Hardware Mechanism:
     Standard TCP assumes network conditions change after an idle gap, resetting cwnd back to initial window.
-    In financial trading, market quotes arrive in bursts after quiet periods.
+    Furthermore, Linux 'Autocorking' artificially delays small packets to coalesce them for better throughput.
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │ TCP AUTOCORKING (Coalescing vs Immediate Execution)         │
+    ├─────────────────────────────────────────────────────────────┤
+    │ WITH AUTOCORKING (Default Linux behavior):                  │
+    │ Order 1 -> [ Socket Buffer ] -> Wait 1ms -> [ NIC ]         │
+    │ Order 2 -> [ Socket Buffer ] -^                             │
+    │                                                             │
+    │ WITHOUT AUTOCORKING (tcp_autocorking=0):                    │
+    │ Order 1 -> [ NIC ] (Dispatched immediately, sub-microsecond)│
+    │ Order 2 -> [ NIC ] (Dispatched immediately)                 │
+    └─────────────────────────────────────────────────────────────┘
+
   • Multi-NUMA HFT Impact:
-    Ensures that when an order is dispatched after a quiet lull, it transmits at immediate line-rate.
+    In financial trading, market quotes arrive in bursts after quiet periods. When you react and send an order,
+    you want it to hit the wire immediately. Disabling autocorking and idle slow-start ensures immediate line-rate dispatch.
 EOF_T9
 
     echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
