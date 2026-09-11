@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# HFT LOW-LATENCY KERNEL & OS TUNING SUITE (THE TOP 10 CONFIGS)
+# HFT LOW-LATENCY KERNEL & OS TUNING SUITE (THE TOP 11 CONFIGS)
 # ==============================================================================
 # Purpose: Focused, pedagogical, menu-driven tuning suite for multi-NUMA HFT hosts.
 # Features:
 #   1. Before Benchmark (Nanosecond precision across 8 latency dimensions)
-#   2. Apply Top 10 Low-Latency Kernel/OS Tunings (Runtime only - No GRUB / No Reboot)
+#   2. Apply Top 11 Low-Latency Kernel/OS Tunings (Runtime only - No GRUB / No Reboot)
 #   3. After Benchmark (Nanosecond precision post-tuning comparison)
 #   4. Learning Mode: Side-by-side nanosecond delta analysis + deep architectural
-#      explanation of each of the 10 tunings for multi-NUMA low-latency trading.
+#      explanation of each of the 11 tunings for multi-NUMA low-latency trading.
 # Author : Google Antigravity Advanced Agentic Systems Architecture
 # ==============================================================================
 
@@ -92,7 +92,7 @@ print_banner() {
     echo -e "${BLUE}${BOLD}"
     cat << "EOF_BANNER"
   ╔══════════════════════════════════════════════════════════════════════════╗
-  ║       ⚡ HFT LOW-LATENCY KERNEL & OS TUNING SUITE (TOP 10) ⚡            ║
+  ║       ⚡ HFT LOW-LATENCY KERNEL & OS TUNING SUITE (TOP 11) ⚡            ║
   ║      Nanosecond Precision Microbenchmarks • Multi-NUMA Ready             ║
   ╚══════════════════════════════════════════════════════════════════════════╝
 EOF_BANNER
@@ -964,10 +964,10 @@ run_benchmark_pass() {
 }
 
 # ------------------------------------------------------------------------------
-# 8. THE 10 MOST IMPORTANT KERNEL & OS LOW-LATENCY TUNINGS
+# 8. THE 11 MOST IMPORTANT KERNEL & OS LOW-LATENCY TUNINGS
 # ------------------------------------------------------------------------------
 apply_ten_tunings() {
-    print_header "APPLYING THE TOP 10 KERNEL & OS LOW-LATENCY TUNINGS"
+    print_header "APPLYING THE TOP 11 KERNEL & OS LOW-LATENCY TUNINGS"
     print_info "Runtime execution only: No GRUB modification, no system reboot required."
     echo ""
 
@@ -1390,8 +1390,22 @@ EOF_T9
     On multi-NUMA systems, Node 0 handles all peripheral and OS interrupts, leaving Node 1 cores 100% shielded.
 EOF_T10
 
+    echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${WHITE}${BOLD}11. Pre-allocating Static 2MB Hugepages (hugetlbfs / 4GB)${NC}"
+    echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    cat << "EOF_T11"
+  • What it does: Pre-allocates dedicated, non-swappable 2MB memory blocks (2048 pages / 4GB).
+  • Kernel/Hardware Mechanism:
+    Standard 4KB paging requires 4-level page table walks upon a D-TLB miss. Traversing a 16MB structure
+    demands 4,096 Page Table Entries (PTEs). With 2MB hugepages, only 8 PTEs are required across 3 levels.
+    All 8 entries reside permanently within the CPU's Level 1 D-TLB, eliminating hardware memory walks.
+  • Multi-NUMA HFT Impact:
+    Pre-allocating hugepages at boot guarantees contiguous physical DRAM on the local NUMA node adjacent
+    to trading threads and NIC descriptor rings, eliminating runtime fragmentation stalls.
+EOF_T11
+
     echo ""
-    print_success "Learning Mode complete. All 10 architectural principles reviewed."
+    print_success "Learning Mode complete. All 11 architectural principles reviewed."
 }
 
 # ------------------------------------------------------------------------------
@@ -2459,9 +2473,9 @@ show_menu() {
         echo ""
 
         echo -e "  ${CYAN}${BOLD}[1]${NC} Benchmark untuned box ${DIM}(\"Before\" baseline -> before_latency_<ts>.txt)${NC}"
-        echo -e "  ${CYAN}${BOLD}[2]${NC} Apply the 10 key low-latency kernel & OS tunings ${DIM}(Runtime only, no reboot)${NC}"
+        echo -e "  ${CYAN}${BOLD}[2]${NC} Apply the 11 key low-latency kernel & OS tunings ${DIM}(Runtime only, no reboot)${NC}"
         echo -e "  ${CYAN}${BOLD}[3]${NC} Re-benchmark tuned box ${DIM}(\"After\" results -> after_latency_<ts>.txt)${NC}"
-        echo -e "  ${CYAN}${BOLD}[4]${NC} Learning Mode ${DIM}(Compare Before/After & Deep Dive into the 10 Configs)${NC}"
+        echo -e "  ${CYAN}${BOLD}[4]${NC} Learning Mode ${DIM}(Compare Before/After & Deep Dive into the 11 Configs)${NC}"
         echo -e "  ${CYAN}${BOLD}[5]${NC} ${GREEN}${BOLD}Run Complete Pipeline${NC} ${DIM}(Execute 1 -> 2 -> 3 -> 4 automatically)${NC}"
         echo -e "  ${CYAN}${BOLD}[6]${NC} Revert tunings back to baseline ${DIM}(Restore sysctl, irqbalance, C-states)${NC}"
         echo -e "  ${CYAN}${BOLD}[7]${NC} Nanosecond Precision Diagnostic ${DIM}(Verify invariant TSC, clocksource, resolution)${NC}"
