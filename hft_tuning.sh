@@ -2595,7 +2595,7 @@ main() {
             echo "Usage: $(basename "$0") [OPTIONS]"
             echo "Options:"
             echo "  --before       Run baseline before benchmark"
-            echo "  --tune         Apply the 10 kernel/OS tunings (alias: --apply)"
+            echo "  --tune         Apply the 11 kernel/OS tunings (alias: --apply)"
             echo "  --after        Run post-tuning after benchmark"
             echo "  --learn        Run learning mode (compare and explain)"
             echo "  --full         Run entire pipeline (1 -> 2 -> 3 -> 4)"
