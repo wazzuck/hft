@@ -1,0 +1,132 @@
+================================================================================
+HOST SYSTEM & HARDWARE SPECIFICATION PROFILE
+================================================================================
+Capture Timestamp    : 2026-09-11 10:24:48 UTC
+Host Name            : better-grizzly
+Operating System     : Ubuntu 24.04.4 LTS
+Linux Kernel         : 6.17.0-23-generic (x86_64)
+Active Clocksource   : tsc
+Kernel Command Line  : BOOT_IMAGE=/boot/vmlinuz-6.17.0-23-generic root=UUID=1c1d9c44-9763-4c41-bdba-188e7d220bf2 ro
+
+--------------------------------------------------------------------------------
+1. SYSTEM & MOTHERBOARD
+--------------------------------------------------------------------------------
+System Manufacturer  : Supermicro
+Product Model Name   : AS -3015MR-H8TNR
+Product Version      : 0123456789
+Motherboard Model    : H13SRD-F (Vendor: Supermicro)
+BIOS Firmware Vendor : American Megatrends International, LLC.
+BIOS Firmware Version: 1.8
+BIOS Release Date    : 12/23/2025
+
+--------------------------------------------------------------------------------
+2. PROCESSOR ARCHITECTURE & TOPOLOGY
+--------------------------------------------------------------------------------
+CPU Model String     : AMD Ryzen 9 9950X 16-Core Processor
+Instruction Arch     : x86_64
+Physical Sockets     : 1
+Physical Cores/Socket: 16
+Threads per Core     : 2
+Total Logical Cores  : 32
+Online CPU Mask      : 0-31
+Offline CPU Mask     : 
+Max Rated Frequency  : 5756.4521 MHz
+Scaling Governor     : powersave
+SMT Control State    : on
+CPU Idle Driver      : none
+NUMA Architecture    : 1 NUMA Node(s)
+L1 Data Cache        : 768 KiB (16 instances)
+L1 Instruction Cache : 512 KiB (16 instances)
+L2 Cache             : 16 MiB (16 instances)
+L3 Cache             : 64 MiB (2 instances)
+Hardware TSC Features: constant_tsc nonstop_tsc
+
+--------------------------------------------------------------------------------
+3. MEMORY SUBSYSTEM & PHYSICAL DIMMS
+--------------------------------------------------------------------------------
+Total System DRAM    : 123.4 GB (129414980 kB)
+Available DRAM       : 115.3 GB
+Configured Swap Space: 8.0 GB
+
+Physical DIMM Modules (DMI):
+	Size: 32 GB
+	Locator: DIMMA1
+	Bank Locator: P0_Node0_Channel0_Dimm0
+	Type: DDR5
+	Speed: 4800 MT/s
+	Manufacturer: SK Hynix
+	Part Number: HMCG88MEBEA081N               
+	Configured Memory Speed: 3600 MT/s
+	Volatile Size: 32 GB
+	Size: 32 GB
+	Locator: DIMMA2
+	Bank Locator: P0_Node0_Channel0_Dimm1
+	Type: DDR5
+	Speed: 4800 MT/s
+	Manufacturer: SK Hynix
+	Part Number: HMCG88MEBEA081N               
+	Configured Memory Speed: 3600 MT/s
+	Volatile Size: 32 GB
+	Size: 32 GB
+	Locator: DIMMB1
+	Bank Locator: P0_Node0_Channel1_Dimm0
+	Type: DDR5
+	Speed: 4800 MT/s
+	Manufacturer: SK Hynix
+	Part Number: HMCG88MEBEA081N               
+	Configured Memory Speed: 3600 MT/s
+	Volatile Size: 32 GB
+	Size: 32 GB
+	Locator: DIMMB2
+	Bank Locator: P0_Node0_Channel1_Dimm1
+
+--------------------------------------------------------------------------------
+4. NETWORK CONTROLLERS & PHYSICAL INTERFACES
+--------------------------------------------------------------------------------
+PCI Network Controllers:
+01:00.0 Ethernet controller [0200]: Intel Corporation Ethernet Controller E810-XXV for SFP [8086:159b] (rev 02)
+	Subsystem: Super Micro Computer Inc Ethernet Controller E810-XXV for SFP [15d9:1d92]
+	Kernel driver in use: ice
+	Kernel modules: ice
+01:00.1 Ethernet controller [0200]: Intel Corporation Ethernet Controller E810-XXV for SFP [8086:159b] (rev 02)
+	Subsystem: Super Micro Computer Inc Ethernet Controller E810-XXV for SFP [15d9:1d92]
+	Kernel driver in use: ice
+	Kernel modules: ice
+
+Active Network Interfaces:
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+enp1s0f0         UP             
+enp1s0f1         UP             
+bond0            UP             46.166.169.134/27 fe80::925a:8ff:fe82:7c6e/64 
+bond0.3340@bond0 UP             10.197.21.16/24 fe80::925a:8ff:fe82:7c6e/64 
+
+--------------------------------------------------------------------------------
+5. STORAGE & NVME SUBSYSTEM
+--------------------------------------------------------------------------------
+PCI Storage Controllers:
+02:00.0 Non-Volatile memory controller [0108]: Micron Technology Inc 7500 PRO NVMe SSD [1344:51b7] (rev 01)
+	Subsystem: Micron Technology Inc 7500 PRO NVMe SSD [1344:2000]
+	Kernel driver in use: nvme
+	Kernel modules: nvme
+03:00.0 Non-Volatile memory controller [0108]: Micron Technology Inc 7500 PRO NVMe SSD [1344:51b7] (rev 01)
+	Subsystem: Micron Technology Inc 7500 PRO NVMe SSD [1344:2000]
+	Kernel driver in use: nvme
+	Kernel modules: nvme
+
+Block Storage Devices:
+NAME          SIZE TYPE  FSTYPE            MODEL                   MOUNTPOINTS
+nvme0n1     894.3G disk                    MTFDKCC960TGP-1BK1JABYY 
+├─nvme0n1p1   488M part  vfat                                      /boot/efi/ubuntu2
+└─nvme0n1p2 893.8G part  linux_raid_member                         
+  └─md0     893.6G raid1 ext4                                      /
+nvme1n1     894.3G disk                    MTFDKCC960TGP-1BK1JABYY 
+├─nvme1n1p1   488M part  vfat                                      /boot/efi
+└─nvme1n1p2 893.8G part  linux_raid_member                         
+  └─md0     893.6G raid1 ext4                                      /
+
+--------------------------------------------------------------------------------
+6. PCIE BUS SUBSYSTEM & VIRTUALIZATION
+--------------------------------------------------------------------------------
+PCIe ASPM Link Policy: [default] performance powersave powersupersave 
+IOMMU Hardware State : /sys/class/iommu/ivhd0
+================================================================================

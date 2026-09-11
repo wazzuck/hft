@@ -1,0 +1,33 @@
+{
+  "timestamp": "2026-09-08T00:30:53+00:00",
+  "system": {
+    "hostname": "hft-alma",
+    "os": "AlmaLinux 9.8 (Olive Jaguar)",
+    "kernel": "5.14.0-687.36.1.el9_8.x86_64",
+    "cpu": "Intel(R) Core(TM) i3-9100T CPU @ 3.10GHz",
+    "vcpus": 2,
+    "virt": "Virtual (kvm)"
+  },
+  "benchmarks": {
+    "CLOCK_MONO_AVG": { "label": "Clock Monotonic (Mean)", "before_ns": 80.6, "after_ns": 81.3, "delta_ns": -0.7, "pct_improvement": "0.00%", "verdict": "SLOWER" },
+    "CLOCK_MONO_P99": { "label": "Clock Monotonic (P99)", "before_ns": 87.1, "after_ns": 84.5, "delta_ns": 2.6, "pct_improvement": "2.00%", "verdict": "FASTER" },
+    "CLOCK_RAW_AVG": { "label": "Clock Monotonic Raw (Mean)", "before_ns": 39.0, "after_ns": 40.0, "delta_ns": -1.0, "pct_improvement": "-2.00%", "verdict": "SLOWER" },
+    "CLOCK_RAW_P99": { "label": "Clock Monotonic Raw (P99)", "before_ns": 41.6, "after_ns": 40.9, "delta_ns": 0.7, "pct_improvement": "1.00%", "verdict": "FASTER" },
+    "SYSCALL_AVG": { "label": "Minimal Syscall getpid (Mean)", "before_ns": 675.7, "after_ns": 694.7, "delta_ns": -19.0, "pct_improvement": "-2.00%", "verdict": "SLOWER" },
+    "SYSCALL_P99": { "label": "Minimal Syscall getpid (P99)", "before_ns": 745.1, "after_ns": 765.4, "delta_ns": -20.3, "pct_improvement": "-2.00%", "verdict": "SLOWER" },
+    "CTXSWITCH_AVG": { "label": "Thread Context Switch (Mean)", "before_ns": 6888.6, "after_ns": 6798.9, "delta_ns": 89.7, "pct_improvement": "1.00%", "verdict": "FASTER" },
+    "CTXSWITCH_P99": { "label": "Thread Context Switch (P99)", "before_ns": 13507.8, "after_ns": 12015.7, "delta_ns": 1492.1, "pct_improvement": "11.00%", "verdict": "FASTER" },
+    "TCPLOOP_AVG": { "label": "TCP Loopback Ping-Pong (Mean)", "before_ns": 22900.4, "after_ns": 21865.2, "delta_ns": 1035.2, "pct_improvement": "4.00%", "verdict": "FASTER" },
+    "TCPLOOP_P99": { "label": "TCP Loopback Ping-Pong (P99)", "before_ns": 39793.5, "after_ns": 36023.5, "delta_ns": 3770.0, "pct_improvement": "9.00%", "verdict": "FASTER" },
+    "UDPLOOP_AVG": { "label": "UDP Loopback Ping-Pong (Mean)", "before_ns": 19593.9, "after_ns": 20687.2, "delta_ns": -1093.3, "pct_improvement": "-5.00%", "verdict": "SLOWER" },
+    "UDPLOOP_P99": { "label": "UDP Loopback Ping-Pong (P99)", "before_ns": 35464.1, "after_ns": 35868.1, "delta_ns": -404.0, "pct_improvement": "-1.00%", "verdict": "SLOWER" },
+    "UDSLOOP_AVG": { "label": "UNIX Domain Socket RTT (Mean)", "before_ns": 10141.3, "after_ns": 11201.1, "delta_ns": -1059.8, "pct_improvement": "-10.00%", "verdict": "SLOWER" },
+    "UDSLOOP_P99": { "label": "UNIX Domain Socket RTT (P99)", "before_ns": 22914.1, "after_ns": 28951.1, "delta_ns": -6037.0, "pct_improvement": "-26.00%", "verdict": "SLOWER" },
+    "MEM_CHASE_AVG": { "label": "Memory Pointer Chase (LLC/RAM)", "before_ns": 53.08, "after_ns": 69.00, "delta_ns": -15.9, "pct_improvement": "-29.00%", "verdict": "SLOWER" },
+    "CAS_CONTENTION_AVG": { "label": "Atomic CAS Contention", "before_ns": 41.61, "after_ns": 40.46, "delta_ns": 1.1, "pct_improvement": "2.00%", "verdict": "FASTER" },
+    "JITTER_SPIKES": { "label": "OS Jitter Stalls (>1000ns)", "before_ns": 2691, "after_ns": 2766, "delta_ns": -75.0, "pct_improvement": "-2.00%", "verdict": "SLOWER" },
+    "JITTER_MAX": { "label": "OS Jitter Max Pause", "before_ns": 101177.8, "after_ns": 78154.0, "delta_ns": 23023.8, "pct_improvement": "22.00%", "verdict": "FASTER" },
+    "CYCLIC_AVG": { "label": "Cyclictest Timer Wakeup (Mean)", "before_ns": 0, "after_ns": 0, "delta_ns": N/A, "pct_improvement": "0.00%", "verdict": "SAME" },
+    "CYCLIC_MAX": { "label": "Cyclictest Timer Wakeup (Max)", "before_ns": 0, "after_ns": 0, "delta_ns": N/A, "pct_improvement": "0.00%", "verdict": "SAME" }
+  }
+}
