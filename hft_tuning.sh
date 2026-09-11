@@ -1795,7 +1795,16 @@ apply_grub_parameters() {
         if grep -q "^GRUB_CMDLINE_LINUX=" /etc/default/grub; then
             local curr_line
             curr_line="$(grep "^GRUB_CMDLINE_LINUX=" /etc/default/grub | sed -e 's/^GRUB_CMDLINE_LINUX="//' -e 's/"$//')"
-            local new_line="${curr_line} ${grub_line}"
+            for p in isolcpus nohz nohz_full rcu_nocbs rcupdate.rcu_normal_after_boot skew_tick nosmt audit mce transparent_hugepage default_hugepagesz hugepages pcie_aspm mitigations; do
+                curr_line="$(echo "$curr_line" | sed -E "s/(^|[[:space:]])${p}(=[^[:space:]]+)?([[:space:]]|$)/ /g")"
+            done
+            curr_line="$(echo "$curr_line" | xargs)"
+            local new_line
+            if [ -n "$curr_line" ]; then
+                new_line="${curr_line} ${grub_line}"
+            else
+                new_line="${grub_line}"
+            fi
             sudo sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"${new_line}\"|" /etc/default/grub
         else
             echo "GRUB_CMDLINE_LINUX=\"$grub_line\"" | sudo tee -a /etc/default/grub >/dev/null
