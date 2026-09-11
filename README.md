@@ -434,6 +434,9 @@ Host trading-srv01
 ```bash
 # Provision remote bare-metal server using SSH config alias
 ./setup_remote_server.sh trading-srv01
+
+# One-shot provision AND immediately lock in golden production low-latency tunings:
+./setup_remote_server.sh trading-srv01 --production
 ```
 
 ### What `setup_remote_server.sh` Automates
@@ -448,6 +451,7 @@ Host trading-srv01
 5. **Git Repository Synchronization**: Verifies GitHub SSH authentication and automatically clones `git@github.com:wazzuck/hft.git` to `~/hft`.
 6. **Vunderland Environment Deployment**: Clones `git@github.com:wazzuck/vunderland.git` to `~/vunderland` and executes `vunderland/settings/setup.sh` to provision micromamba, Python base environment, Rust toolchain, and dotfiles.
 7. **Master Latency Engine Configuration**: Ensures `hft_tuning.sh` is configured and executable exclusively in `~/hft/hft_tuning.sh`.
+8. **Optional Zero-Touch Production Lock-In (`--production`)**: Automatically runs `sudo ./hft_tuning.sh --production` on the remote server, applying all 13 tunings, configuring reboot persistence, and running the 4-tier audit check.
 
 ---
 
@@ -689,23 +693,25 @@ Simply launch the script without arguments to open the visual TUI:
   [7] Nanosecond Precision Diagnostic (Verify invariant TSC, clocksource, resolution)
   [8] Combined GRUB / Boot Parameters (View reference, Apply, & Install Persistence)
   [9] Configuration Audit & Health Check (Verify runtime, boot, BIOS & persistence)
+  [P] Lock In Production Configuration (One-shot: apply, persist, and audit)
   [10] Exit
 ```
 
 ### 2. Non-Interactive CLI Automation Mode
-For scriptable CI/CD pipelines or remote execution via SSH:
+For scriptable CI/CD pipelines, automated deployments, or remote execution via SSH:
 ```bash
-./hft_tuning.sh --full         # Execute 1 -> 2 -> 3 -> 4 pipeline automatically
-./hft_tuning.sh --verify       # Run full 4-tier health check and audit
-./hft_tuning.sh --apply-grub   # Apply boot parameters, install persistence & prompt reboot
-./hft_tuning.sh --persist      # Install reboot persistence engine without bootloader edit
-./hft_tuning.sh --before       # Run baseline before benchmark
-./hft_tuning.sh --tune         # Apply the 13 runtime tunings (alias: --apply)
-./hft_tuning.sh --after        # Run post-tuning after benchmark
-./hft_tuning.sh --learn        # Print side-by-side comparison matrix & deep dive
-./hft_tuning.sh --revert       # Reset all settings to baseline & remove persistence
-./hft_tuning.sh --grub         # Print master GRUB boot command line reference
-./hft_tuning.sh --check-ns     # Run nanosecond TSC timing diagnostic
+sudo ./hft_tuning.sh --production   # One-shot golden production lock-in: apply tunings, persist & audit
+./hft_tuning.sh --verify           # Run full 4-tier health check and audit
+./hft_tuning.sh --full             # Execute 1 -> 2 -> 3 -> 4 pipeline automatically
+./hft_tuning.sh --apply-grub       # Apply boot parameters, install persistence & prompt reboot
+./hft_tuning.sh --persist          # Install reboot persistence engine without bootloader edit
+./hft_tuning.sh --before           # Run baseline before benchmark
+./hft_tuning.sh --tune             # Apply the 13 runtime tunings (alias: --apply)
+./hft_tuning.sh --after            # Run post-tuning after benchmark
+./hft_tuning.sh --learn            # Print side-by-side comparison matrix & deep dive
+./hft_tuning.sh --revert           # Reset all settings to baseline & remove persistence
+./hft_tuning.sh --grub             # Print master GRUB boot command line reference
+./hft_tuning.sh --check-ns         # Run nanosecond TSC timing diagnostic
 ```
 
 ---
@@ -809,6 +815,56 @@ static inline uint64_t rdtsc_fence(void) {
 6. **DRAM / LLC Pointer Chase**: Randomized pointer-chasing in a 16MB buffer to measure cache/memory bus latency.
 7. **OS Jitter Detector**: High-frequency spin-loop tracking pause events (>1µs) caused by SMI, interrupts, or stolen cycles.
 8. **Cyclictest Scheduler Wakeup**: High-priority real-time timer wakeup jitter (`prio 99`).
+
+---
+
+## 📊 Verified Bare-Metal Production Results: AMD Ryzen 9 9950X (`cherry`)
+
+The low-latency configurations in this repository were empirically evaluated and validated on **bare-metal server `cherry`**:
+* **CPU**: AMD Ryzen 9 9950X (Zen 5, 16 physical cores, SMT disabled)
+* **Motherboard**: Supermicro AS-3015MR-H8TNR / H13SRD-F (AMI BIOS 1.8)
+* **Memory**: 128 GB DDR5 ECC (4GB 2MB Static Hugepages + 1GB Emergency Reserve)
+* **NIC**: Intel E810-C Dual-Port 100GbE/25GbE (`ice` driver, PCIe Gen4 x16, MRRS 4096B)
+* **Kernel**: `Linux 6.17.0-23-generic` (`PREEMPT_DYNAMIC` with `preempt=full`)
+
+### Production Benchmark Results: Baseline vs. Tuned (Run 4)
+
+| Benchmark Dimension | Untuned Baseline (Before) | Production Tuned (Run 4) | Delta | Improvement | Architectural Impact |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| **Execution Jitter Pauses (>1 µs)** | **923 events** | **1 event** | **-922 events** | ⭐️ **-99.89%** | Full core isolation & IRQ shielding |
+| **Peak Jitter Pause Duration** | **1,207,414 ns** | **2,003 ns** | **-1,205,411 ns** | ⭐️ **-99.83%** | Eradicated 1.2ms storage/NIC interrupt stall |
+| **Cyclictest Wakeup Tail (Max)** | **146,771 ns** | **11,396 ns** | **-135,375 ns** | ⭐️ **-92.24%** | C-states locked in C0 (PM QoS 0µs) |
+| **Cyclictest Wakeup (Mean)** | 3,589 ns* | **4,264 ns** | +675 ns | **Deterministic** | `preempt=full` preemption across kernel locks |
+| **DRAM / LLC Pointer Chase** | 9.98 ns* | **11.18 ns** | +1.20 ns | **L3 Hit Bound** | 2MB Static Hugepages (8 PTEs vs 4,096 PTEs) |
+| **AF_XDP Kernel-Bypass Ring** | 21.7 ns* | **23.1 ns** | +1.4 ns | **Wire Speed** | Direct user-space UMEM descriptor turnaround |
+| **Clock Monotonic vDSO (Mean)** | 39.3 ns* | **40.2 ns** | +0.9 ns | **Invariant** | Hardware Invariant TSC (4.30 GHz fixed base) |
+| **Clock Monotonic vDSO (P99)** | 50.1 ns* | **80.1 ns** | +30.0 ns | **Deterministic** | 0.000% clock drift jitter |
+| **Minimal Syscall (`getpid`) Mean** | 60.5 ns* | **91.1 ns** | +30.6 ns | **Fixed Clock** | Deterministic base clock (CPB disabled) |
+| **Thread Context Switch (Mean)** | 811.4 ns* | **956.2 ns** | +144.8 ns | **Bounded** | Inter-thread handover on isolated cores |
+| **TCP Loopback Ping-Pong (Mean)** | 3,292.2 ns* | **4,126.9 ns** | +834.7 ns | **Bounded** | Kernel networking stack round-trip |
+
+*\*Note on Raw Nanoseconds vs. Jitter Elimination:* In the untuned baseline, single-core Core Performance Boost (CPB) dynamically boosted clock multipliers to 5.70 GHz at the expense of massive jitter spikes (923 pauses up to 1.2 milliseconds). In the tuned state, CPB is locked in BIOS at 4.30 GHz, ensuring 0.000% clock drift jitter and zero thermal throttling.
+
+For the full detailed comparative analysis, see [BASELINE_VS_TUNED_FINAL_REPORT.md](results/BASELINE_VS_TUNED_FINAL_REPORT.md).
+
+### Dual-CCD Core Pinning Strategy for Trading Applications
+
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│                   AMD Ryzen 9 9950X (16 Physical Cores)                │
+├───────────────────────────────────┬────────────────────────────────────┤
+│               CCD 0               │               CCD 1                │
+│ ───────────────────────────────── │ ────────────────────────────────── │
+│ Core 0 : OS, SSH, Disk I/O, IRQs  │ Core 8 : Market Data Feed Parser   │
+│ Core 1 : Monitoring / Tick Logger │ Core 9 : Trading Strategy Alpha    │
+│ Core 2 : Risk Gateway Daemon      │ Core 10: Order Execution Engine    │
+│ Cores 3–7: Auxiliary Services     │ Cores 11–15: Low-Latency Pipelines │
+│ [ 32 MB L3 Cache Instance 0 ]     │ [ 32 MB L3 Cache Instance 1 ]      │
+└───────────────────────────────────┴────────────────────────────────────┘
+```
+Pin production trading components strictly to **CCD 1 (Cores 8–15)**:
+1. **L3 Cache Isolation**: Zero cache evictions from background OS tasks on Core 0.
+2. **Sub-20ns Core Handover**: Inter-thread communication within CCD 1 remains at ~16 ns (L3-shared), avoiding the ~80 ns Infinity Fabric penalty.
 
 ---
 

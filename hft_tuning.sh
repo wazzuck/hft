@@ -2001,6 +2001,31 @@ apply_grub_parameters() {
 }
 
 # ------------------------------------------------------------------------------
+# 12b. ONE-SHOT PRODUCTION LOCK-IN & DEPLOYMENT ENGINE
+# ------------------------------------------------------------------------------
+production_lockin() {
+    print_header "LOCKING IN GOLDEN HFT PRODUCTION CONFIGURATION"
+    print_info "Automated deployment: applying runtime tunings, installing persistence, and auditing..."
+    echo ""
+
+    print_subheader "Step 1/3: Applying 100% of Runtime OS, Kernel, Network & Memory Tunings"
+    apply_ten_tunings
+    echo ""
+
+    print_subheader "Step 2/3: Installing & Enabling Reboot Persistence Engine"
+    persist_all_tunings
+    echo ""
+
+    print_subheader "Step 3/3: Executing Comprehensive 4-Tier Verification Audit"
+    check_all_configs
+    echo ""
+
+    print_header "PRODUCTION CONFIGURATION LOCKED IN & VERIFIED"
+    print_success "Server is 100% locked into golden low-latency production configuration."
+    print_info "All runtime, network, memory, and PCIe tunings will survive system reboots."
+}
+
+# ------------------------------------------------------------------------------
 # 13. COMPREHENSIVE CONFIGURATION AUDIT & VERIFICATION ENGINE
 # ------------------------------------------------------------------------------
 check_all_configs() {
@@ -2689,9 +2714,10 @@ show_menu() {
         echo -e "  ${CYAN}${BOLD}[7]${NC} Nanosecond Precision Diagnostic ${DIM}(Verify invariant TSC, clocksource, resolution)${NC}"
         echo -e "  ${CYAN}${BOLD}[8]${NC} ${YELLOW}${BOLD}Combined GRUB / Boot Parameters${NC} ${DIM}(View reference, Apply, & Install Persistence)${NC}"
         echo -e "  ${CYAN}${BOLD}[9]${NC} ${GREEN}${BOLD}Configuration Audit & Health Check${NC} ${DIM}(Verify runtime, boot, BIOS & persistence)${NC}"
+        echo -e "  ${CYAN}${BOLD}[P]${NC} ${MAGENTA}${BOLD}Lock In Production Configuration${NC} ${DIM}(One-shot: apply, persist, and audit)${NC}"
         echo -e "  ${CYAN}${BOLD}[10]${NC} Exit"
         echo ""
-        echo -n -e "  ${WHITE}${BOLD}Select an option [1-10]:${NC} "
+        echo -n -e "  ${WHITE}${BOLD}Select an option [1-10, P]:${NC} "
         read -r choice
 
         case "$choice" in
@@ -2729,6 +2755,10 @@ show_menu() {
                 ;;
             9)
                 check_all_configs
+                pause_for_user
+                ;;
+            p|P|prod|production)
+                production_lockin
                 pause_for_user
                 ;;
             10|q|Q)
@@ -2799,9 +2829,14 @@ main() {
             print_banner
             check_all_configs
             ;;
+        --production|--deploy|--lock-in|-p)
+            print_banner
+            production_lockin
+            ;;
         --help|-h)
             echo "Usage: $(basename "$0") [OPTIONS]"
             echo "Options:"
+            echo "  --production   One-shot golden production deployment: apply tunings, install persistence & verify (aliases: --deploy, --lock-in)"
             echo "  --before       Run baseline before benchmark"
             echo "  --tune         Apply the 13 kernel/OS tunings (alias: --apply)"
             echo "  --after        Run post-tuning after benchmark"

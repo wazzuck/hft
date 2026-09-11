@@ -99,11 +99,14 @@ Options:
   --skip-install       Skip running ~/hft/install.sh (tmux, git, agy CLI).
   --no-repo            Skip cloning the Git repository.
   --skip-tools         Skip installing packages; only deploy SSH keys and Git repo.
+  --production, --deploy-production
+                       Immediately lock in golden production tunings on the remote host after setup.
   --dry-run            Validate SSH connectivity and display parameters without modifying the server.
   --help, -h           Show this manual.
 
 Examples:
   $(basename "$0") hft-prod
+  $(basename "$0") hft-prod --production
   $(basename "$0") hft-sim
   $(basename "$0") 192.168.122.210 --repo git@github.com:wazzuck/hft.git
   $(basename "$0") server01.chicago.colo --dir ~/production_hft
@@ -131,10 +134,15 @@ VUNDERLAND_REPO="git@github.com:wazzuck/vunderland.git"
 CLONE_VUNDERLAND=true
 RUN_INSTALL=true
 INSTALL_TOOLS=true
+DEPLOY_PRODUCTION=false
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --production|--deploy-production)
+            DEPLOY_PRODUCTION=true
+            shift
+            ;;
         --repo)
             GIT_REPO="$2"
             shift 2
@@ -676,6 +684,12 @@ elif [ -f "$HOME/.cargo/bin/rustc" ]; then
 fi
 EOF_VERIFY
 
+if [ "$DEPLOY_PRODUCTION" = true ]; then
+    print_header "LOCKING IN GOLDEN PRODUCTION CONFIGURATION ON REMOTE SERVER"
+    print_info "Executing: cd $TARGET_DIR && sudo ./hft_tuning.sh --production..."
+    ssh -t "$DEST_HOST" "cd $TARGET_DIR && sudo ./hft_tuning.sh --production"
+fi
+
 echo ""
 print_subheader "Next Steps: Connecting & Running Latency Tuning"
 echo -e "  ${WHITE}${BOLD}1. Connect to the server:${NC}"
@@ -684,7 +698,9 @@ echo ""
 echo -e "  ${WHITE}${BOLD}2. Navigate to your repository:${NC}"
 echo -e "     ${CYAN}cd $TARGET_DIR${NC}"
 echo ""
-echo -e "  ${WHITE}${BOLD}3. Run the nanosecond latency benchmark & comprehensive tuning suite:${NC}"
-echo -e "     ${CYAN}./hft_tuning.sh --full${NC}"
+echo -e "  ${WHITE}${BOLD}3. Lock in production tunings or run benchmarks:${NC}"
+echo -e "     ${CYAN}sudo ./hft_tuning.sh --production${NC}   # One-shot golden production lock-in"
+echo -e "     ${CYAN}sudo ./hft_tuning.sh --verify${NC}       # Comprehensive 4-tier audit check"
+echo -e "     ${CYAN}sudo ./hft_tuning.sh --full${NC}         # Full pipeline: Benchmark -> Tune -> Benchmark -> Learn"
 echo ""
 echo -e "${BLUE}${BOLD}══════════════════════════════════════════════════════════════════════════${NC}"
