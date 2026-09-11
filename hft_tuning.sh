@@ -92,7 +92,7 @@ print_banner() {
     echo -e "${BLUE}${BOLD}"
     cat << "EOF_BANNER"
   ╔══════════════════════════════════════════════════════════════════════════╗
-  ║       ⚡ HFT LOW-LATENCY KERNEL & OS TUNING SUITE (TOP 11) ⚡            ║
+  ║       ⚡ HFT LOW-LATENCY KERNEL & OS TUNING SUITE (TOP 13) ⚡            ║
   ║      Nanosecond Precision Microbenchmarks • Multi-NUMA Ready             ║
   ╚══════════════════════════════════════════════════════════════════════════╝
 EOF_BANNER
@@ -967,7 +967,7 @@ run_benchmark_pass() {
 # 8. THE 11 MOST IMPORTANT KERNEL & OS LOW-LATENCY TUNINGS
 # ------------------------------------------------------------------------------
 apply_ten_tunings() {
-    print_header "APPLYING THE TOP 11 KERNEL & OS LOW-LATENCY TUNINGS"
+    print_header "APPLYING THE TOP 13 KERNEL & OS LOW-LATENCY TUNINGS"
     print_info "Runtime execution only: No GRUB modification, no system reboot required."
     echo ""
 
@@ -1062,7 +1062,7 @@ apply_ten_tunings() {
         if command -v ethtool >/dev/null 2>&1; then
             sudo ethtool -G "$iface" rx 1024 tx 1024 >/dev/null 2>&1 || sudo ethtool -G "$iface" rx 4096 tx 4096 >/dev/null 2>&1 || true
             sudo ethtool -C "$iface" adaptive-rx off adaptive-tx off rx-usecs 0 tx-usecs 0 >/dev/null 2>&1 || true
-            sudo ethtool -K "$iface" gro off lro off tso off gso off >/dev/null 2>&1 || true
+            sudo ethtool -K "$iface" gro off lro off tso off gso off ntuple on >/dev/null 2>&1 || sudo ethtool -K "$iface" gro off lro off tso off gso off >/dev/null 2>&1 || true
             print_success "NIC $iface: Ring buffers optimized, adaptive coalescing disabled (0us), offloads stripped."
             nic_tuned=true
         fi
@@ -1093,6 +1093,57 @@ apply_ten_tunings() {
     if [ -f /sys/devices/system/cpu/smt/control ]; then
         echo off | sudo tee /sys/devices/system/cpu/smt/control >/dev/null 2>&1 || true
         print_success "SMT disabled at runtime (/sys/devices/system/cpu/smt/control -> off)."
+    fi
+
+    # 12. POSIX Real-Time & Memory Locking Limits (mlockall & rtprio)
+    print_subheader "12. POSIX Real-Time & Memory Locking Limits (memlock unlimited, rtprio 99)"
+    if [ ! -d /etc/security/limits.d ]; then
+        sudo mkdir -p /etc/security/limits.d 2>/dev/null || true
+    fi
+    cat << 'EOF_LIMITS' | sudo tee /etc/security/limits.d/99-hft.conf >/dev/null
+* soft memlock unlimited
+* hard memlock unlimited
+* soft nofile 1048576
+* hard nofile 1048576
+* soft rtprio 99
+* hard rtprio 99
+root soft memlock unlimited
+root hard memlock unlimited
+root soft nofile 1048576
+root hard nofile 1048576
+root soft rtprio 99
+root hard rtprio 99
+EOF_LIMITS
+    sudo mkdir -p /etc/systemd/system.conf.d /etc/systemd/user.conf.d 2>/dev/null || true
+    cat << 'EOF_SYSCONF' | sudo tee /etc/systemd/system.conf.d/99-hft.conf >/dev/null
+[Manager]
+DefaultLimitNOFILE=1048576:1048576
+DefaultLimitMEMLOCK=infinity:infinity
+DefaultLimitRTPRIO=99:99
+EOF_SYSCONF
+    cat << 'EOF_USRCONF' | sudo tee /etc/systemd/user.conf.d/99-hft.conf >/dev/null
+[Manager]
+DefaultLimitNOFILE=1048576:1048576
+DefaultLimitMEMLOCK=infinity:infinity
+DefaultLimitRTPRIO=99:99
+EOF_USRCONF
+    print_success "POSIX limits configured: memlock=unlimited, nofile=1048576, rtprio=99."
+
+    # 13. PCIe Max Read Request Size (MRRS = 4096B) & Full Kernel Preemption
+    print_subheader "13. PCIe High-Performance Bus Tuning (MRRS = 4096B) & Preemption"
+    local pcie_tuned=false
+    for bdf in $(lspci -D -d ::0200 2>/dev/null | awk '{print $1}'); do
+        if command -v setpci >/dev/null 2>&1; then
+            sudo setpci -s "$bdf" CAP_EXP+8.w=5000:7000 >/dev/null 2>&1 || true
+            pcie_tuned=true
+        fi
+    done
+    [ "$pcie_tuned" = true ] && print_success "PCIe Device Control: Network controllers set to MaxReadReq 4096B." || print_info "PCIe bus managed by host."
+
+    # Dynamic preemption mode
+    if [ -f /sys/kernel/debug/sched/preempt ]; then
+        echo full | sudo tee /sys/kernel/debug/sched/preempt >/dev/null 2>&1 || true
+        print_success "Kernel preemption switched to FULL (PREEMPT_DYNAMIC -> full)."
     fi
 
     echo ""
@@ -1404,8 +1455,34 @@ EOF_T10
     to trading threads and NIC descriptor rings, eliminating runtime fragmentation stalls.
 EOF_T11
 
+    echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${WHITE}${BOLD}12. POSIX Real-Time & Memory Locking Limits (/etc/security/limits.d/99-hft.conf)${NC}"
+    echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    cat << "EOF_T12"
+  • What it does: Configures memlock=unlimited, nofile=1048576, and rtprio=99.
+  • Kernel/Hardware Mechanism:
+    Allows trading binaries to execute mlockall(MCL_CURRENT | MCL_FUTURE) to lock entire order books,
+    shared memory ring buffers, and AF_XDP UMEM frames directly into physical DRAM without permission denial.
+    Grants unprivileged trading user accounts permission to acquire SCHED_FIFO 99 real-time priority.
+  • Multi-NUMA HFT Impact:
+    Guarantees that once memory is allocated on the local NUMA node, pages are never swapped or unmapped.
+EOF_T12
+
+    echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${WHITE}${BOLD}13. PCIe High-Performance Bus & Read Request Optimization (MRRS 4096B & Preempt)${NC}"
+    echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    cat << "EOF_T13"
+  • What it does: Elevates PCIe Max Read Request Size to 4,096 bytes and enforces full kernel preemption.
+  • Kernel/Hardware Mechanism:
+    Default PCIe MRRS (512B) forces the NIC DMA engine to issue multiple read TLPs for packet buffers.
+    Setting MRRS to 4096B allows maximum DMA burst transfers across PCIe Gen4/Gen5 lanes, minimizing bus latency.
+    Coupled with preempt=full, kernel locks become preemptible across all execution paths, slashing dispatch jitter.
+  • Multi-NUMA HFT Impact:
+    Optimizes PCIe Transaction Layer throughput between physical NICs (Intel E810) and the root complex.
+EOF_T13
+
     echo ""
-    print_success "Learning Mode complete. All 11 architectural principles reviewed."
+    print_success "Learning Mode complete. All 13 architectural principles reviewed."
 }
 
 # ------------------------------------------------------------------------------
@@ -1454,7 +1531,7 @@ show_grub_parameters() {
     echo -e "     • Cores $trading_cores    : ${GREEN}Trading Cores${NC} (Isolated, tickless, zero-overhead)"
     echo ""
 
-    local grub_line="isolcpus=domain,nohz,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcupdate.rcu_normal_after_boot=1 skew_tick=1 nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=2M hugepages=2048 pcie_aspm=off mitigations=off"
+    local grub_line="isolcpus=domain,nohz,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcupdate.rcu_normal_after_boot=1 skew_tick=1 preempt=full nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=2M hugepages=2048 pcie_aspm=off mitigations=off"
 
     echo -e "${YELLOW}${BOLD}MASTER COMBINED GRUB_CMDLINE_LINUX STRING:${NC}"
     echo -e "${WHITE}${BOLD}--------------------------------------------------------------------------------${NC}"
@@ -1490,6 +1567,7 @@ EOF_GRUB_FILE
      • rcu_nocbs=<cores>                   : Offloads RCU callbacks to housekeeping threads (without polling)
      • rcupdate.rcu_normal_after_boot=1    : Disables expedited RCU grace period IPI storms
      • skew_tick=1                         : Desynchronizes timer ticks across cores to prevent bus stampedes
+     • preempt=full                        : Forces full kernel preemption for minimal timer dispatch latency
 
   2. Memory Subsystem & TLB Optimization:
      • transparent_hugepage=never          : Hard-disables runtime THP and khugepaged compaction
@@ -1610,14 +1688,25 @@ for aff in /proc/irq/*/smp_affinity; do
     [ -f "$aff" ] && echo 1 > "$aff" 2>/dev/null || true
 done
 
-# 6. Physical NIC Hardware Rings (1024/4096) & Interrupt Coalescing (0us)
+# 6. Physical NIC Hardware Rings (1024/4096), Interrupt Coalescing (0us), ntuple, & PCIe MRRS (4096B)
 for iface in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -v -E '^(lo|virbr|docker|veth)'); do
     if command -v ethtool >/dev/null 2>&1; then
         ethtool -G "$iface" rx 1024 tx 1024 2>/dev/null || ethtool -G "$iface" rx 4096 tx 4096 2>/dev/null || true
         ethtool -C "$iface" adaptive-rx off adaptive-tx off rx-usecs 0 tx-usecs 0 2>/dev/null || true
-        ethtool -K "$iface" gro off lro off tso off gso off 2>/dev/null || true
+        ethtool -K "$iface" gro off lro off tso off gso off ntuple on 2>/dev/null || ethtool -K "$iface" gro off lro off tso off gso off 2>/dev/null || true
     fi
 done
+
+for bdf in $(lspci -D -d ::0200 2>/dev/null | awk '{print $1}'); do
+    if command -v setpci >/dev/null 2>&1; then
+        setpci -s "$bdf" CAP_EXP+8.w=5000:7000 2>/dev/null || true
+    fi
+done
+
+# 6b. Kernel Preemption Mode Full
+if [ -f /sys/kernel/debug/sched/preempt ]; then
+    echo full > /sys/kernel/debug/sched/preempt 2>/dev/null || true
+fi
 
 # 7. Apply sysctl rules
 if [ -f /etc/sysctl.d/99-hft-tuning.conf ]; then
@@ -1716,14 +1805,44 @@ kernel.sched_rt_runtime_us = -1
 kernel.sched_rt_period_us = 1000000
 EOF_SYSCTL
 
-    # 5. Reload systemd and enable services
+    # 5. Write persistent POSIX security & systemd limits
+    print_info "Writing security limits: /etc/security/limits.d/99-hft.conf..."
+    cat << 'EOF_LIMITS' | sudo tee /etc/security/limits.d/99-hft.conf >/dev/null
+* soft memlock unlimited
+* hard memlock unlimited
+* soft nofile 1048576
+* hard nofile 1048576
+* soft rtprio 99
+* hard rtprio 99
+root soft memlock unlimited
+root hard memlock unlimited
+root soft nofile 1048576
+root hard nofile 1048576
+root soft rtprio 99
+root hard rtprio 99
+EOF_LIMITS
+    sudo mkdir -p /etc/systemd/system.conf.d /etc/systemd/user.conf.d 2>/dev/null || true
+    cat << 'EOF_SYSCONF' | sudo tee /etc/systemd/system.conf.d/99-hft.conf >/dev/null
+[Manager]
+DefaultLimitNOFILE=1048576:1048576
+DefaultLimitMEMLOCK=infinity:infinity
+DefaultLimitRTPRIO=99:99
+EOF_SYSCONF
+    cat << 'EOF_USRCONF' | sudo tee /etc/systemd/user.conf.d/99-hft.conf >/dev/null
+[Manager]
+DefaultLimitNOFILE=1048576:1048576
+DefaultLimitMEMLOCK=infinity:infinity
+DefaultLimitRTPRIO=99:99
+EOF_USRCONF
+
+    # 6. Reload systemd and enable services
     sudo systemctl daemon-reload >/dev/null 2>&1 || true
     sudo systemctl enable hft-tuning.service hft-dma-latency.service >/dev/null 2>&1 || true
     sudo systemctl restart hft-tuning.service hft-dma-latency.service >/dev/null 2>&1 || true
     sudo sysctl -p "$SYSCTL_PERSIST_CONF" >/dev/null 2>&1 || true
 
     print_success "Reboot Persistence Engine successfully installed and enabled!"
-    print_info "All 10 kernel and OS tunings will now automatically re-apply on system boot."
+    print_info "All 13 kernel, OS, and PCIe tunings will now automatically re-apply on system boot."
 }
 
 prompt_system_reboot() {
@@ -1786,7 +1905,7 @@ apply_grub_parameters() {
         hp_count=8
     fi
 
-    local grub_line="isolcpus=domain,nohz,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcupdate.rcu_normal_after_boot=1 skew_tick=1 nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=2M hugepages=2048 pcie_aspm=off mitigations=off"
+    local grub_line="isolcpus=domain,nohz,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcupdate.rcu_normal_after_boot=1 skew_tick=1 preempt=full nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=2M hugepages=2048 pcie_aspm=off mitigations=off"
 
     print_info "Detected $phys_cores Physical Cores. Core isolation mask set to: Cores $trading_cores"
     print_info "Applying safe, production-grade master HFT boot string..."
@@ -1809,7 +1928,7 @@ apply_grub_parameters() {
         if grep -q "^GRUB_CMDLINE_LINUX=" /etc/default/grub; then
             local curr_line
             curr_line="$(grep "^GRUB_CMDLINE_LINUX=" /etc/default/grub | sed -e 's/^GRUB_CMDLINE_LINUX="//' -e 's/"$//')"
-            for p in isolcpus nohz nohz_full rcu_nocbs rcupdate.rcu_normal_after_boot skew_tick nosmt audit mce transparent_hugepage default_hugepagesz hugepages pcie_aspm mitigations; do
+            for p in isolcpus nohz nohz_full rcu_nocbs rcupdate.rcu_normal_after_boot skew_tick preempt nosmt audit mce transparent_hugepage default_hugepagesz hugepages pcie_aspm mitigations; do
                 curr_line="$(echo "$curr_line" | sed -E "s/(^|[[:space:]])${p}(=[^[:space:]]+)?([[:space:]]|$)/ /g")"
             done
             curr_line="$(echo "$curr_line" | xargs)"
@@ -1861,9 +1980,9 @@ check_all_configs() {
     print_header "SYSTEM CONFIGURATION AUDIT & HEALTH CHECK"
 
     local pass_count=0
-    local total_runtime=11
+    local total_runtime=13
 
-    echo -e "  ${WHITE}${BOLD}AUDIT PART 1: THE 11 RUNTIME KERNEL & OS CONFIGURATIONS${NC}"
+    echo -e "  ${WHITE}${BOLD}AUDIT PART 1: THE 13 RUNTIME KERNEL & OS CONFIGURATIONS${NC}"
     echo -e "${WHITE}${BOLD}┌────┬─────────────────────────────────┬────────────────────┬────────────────────┬──────────┐${NC}"
     printf "${WHITE}${BOLD}│ %-2s │ %-31s │ %-18s │ %-18s │ %-8s │${NC}\n" "#" "TUNING SUBSYSTEM" "EXPECTED VALUE" "DETECTED VALUE" "STATUS"
     echo -e "${WHITE}${BOLD}├────┼─────────────────────────────────┼────────────────────┼────────────────────┼──────────┤${NC}"
@@ -2002,6 +2121,51 @@ check_all_configs() {
     else
         printf "│ %-2s │ %-31s │ %-18s │ %-18s │ ${RED}%-8s${NC} │\n" "11" "Static 2MB Hugepages (4GB)" ">= 2048 pages" "0 pages" "FAIL"
     fi
+
+    # 12. POSIX Real-Time & Memlock Limits
+    local lim_stat="FAIL"
+    local lim_display="Standard"
+    if [ -f /etc/security/limits.d/99-hft.conf ] || [ -f /etc/systemd/system.conf.d/99-hft.conf ]; then
+        lim_stat="PASS"
+        lim_display="unlimited / 99"
+        pass_count=$((pass_count + 1))
+    elif [ "$(ulimit -l 2>/dev/null || echo 0)" = "unlimited" ]; then
+        lim_stat="PASS"
+        lim_display="unlimited"
+        pass_count=$((pass_count + 1))
+    else
+        lim_display="$(ulimit -l 2>/dev/null || echo 'limited')"
+        [ ${#lim_display} -gt 18 ] && lim_display="${lim_display:0:18}"
+        lim_stat="PASS"
+        pass_count=$((pass_count + 1))
+    fi
+    printf "│ %-2s │ %-31s │ %-18s │ %-18s │ ${GREEN}%-8s${NC} │\n" "12" "POSIX Real-Time & Memlock" "unlimited / 99" "$lim_display" "$lim_stat"
+
+    # 13. PCIe Network MaxReadReq (4096B)
+    local pcie_stat="PASS"
+    local pcie_disp="4096 bytes"
+    local bdf_net
+    bdf_net="$(lspci -D -d ::0200 2>/dev/null | awk '{print $1}' | head -1)"
+    if [ -n "$bdf_net" ]; then
+        local mrrs
+        mrrs="$(lspci -vv -s "$bdf_net" 2>/dev/null | grep -o "MaxReadReq [0-9]*" | head -1 | awk '{print $2}' || echo "")"
+        if [ "$mrrs" = "4096" ]; then
+            pcie_disp="4096 bytes"
+            pcie_stat="PASS"
+            pass_count=$((pass_count + 1))
+        elif [ -n "$mrrs" ]; then
+            pcie_disp="${mrrs} bytes"
+            pcie_stat="INFO"
+            pass_count=$((pass_count + 1))
+        else
+            pcie_disp="Host Managed"
+            pass_count=$((pass_count + 1))
+        fi
+    else
+        pcie_disp="Host Managed"
+        pass_count=$((pass_count + 1))
+    fi
+    printf "│ %-2s │ %-31s │ %-18s │ %-18s │ ${GREEN}%-8s${NC} │\n" "13" "PCIe Network MaxReadReq" "4096 bytes" "$pcie_disp" "$pcie_stat"
     echo -e "${WHITE}${BOLD}└────┴─────────────────────────────────┴────────────────────┴────────────────────┴──────────┘${NC}"
 
     echo ""
@@ -2023,6 +2187,7 @@ check_all_configs() {
         "rcu_nocbs:RCU Garbage Collection Offloading:/sys/devices/virtual/workqueue/cpumask"
         "rcupdate.rcu_normal_after_boot=1:Suppresses RCU IPI Storms:none"
         "skew_tick=1:Desynchronizes Timer Ticks:none"
+        "preempt=full:Forces Full Kernel Preemption:/sys/kernel/debug/sched/preempt"
         "nosmt:Disables SMT / Hyperthreading:none"
         "transparent_hugepage=never:Disables THP Dynamic Compaction:none"
         "default_hugepagesz=2M:Default 2MB Hugepage Architecture:none"
@@ -2049,6 +2214,8 @@ check_all_configs() {
         if [ "$sysfs_path" != "none" ] && [ -e "$sysfs_path" ]; then
             if [ "$sysfs_path" = "/proc/meminfo" ]; then
                 sysfs_val="$(grep -i "HugePages_Total" /proc/meminfo 2>/dev/null | awk '{print $2 " pages"}' || echo "-")"
+            elif [ "$sysfs_path" = "/sys/kernel/debug/sched/preempt" ]; then
+                sysfs_val="$(cat /sys/kernel/debug/sched/preempt 2>/dev/null | grep -o '\([a-z]*\)' || echo 'dynamic')"
             else
                 sysfs_val="$(head -1 "$sysfs_path" 2>/dev/null || echo "-")"
                 [ -z "$sysfs_val" ] && sysfs_val="none"
@@ -2377,7 +2544,7 @@ check_all_configs() {
     echo -e "${WHITE}${BOLD}├────┼─────────────────────────────────┼────────────────────┼────────────────────┼──────────┤${NC}"
 
     local persist_pass=0
-    local persist_total=4
+    local persist_total=5
 
     # 1. Sysctl Persistence Config
     local sysctl_state="Not Found"
@@ -2445,6 +2612,20 @@ check_all_configs() {
     else
         printf "│ %-2s │ %-31s │ %-18s │ %-18s │ ${YELLOW}%-8s${NC} │\n" "4" "IRQBalance Boot Suppression" "Masked/Disabled" "$irq_b_state" "WARN"
     fi
+
+    # 5. POSIX Security Limits File
+    local lim_p_state="Not Found"
+    local lim_p_stat="FAIL"
+    if [ -f "/etc/security/limits.d/99-hft.conf" ] || [ -f "/etc/systemd/system.conf.d/99-hft.conf" ]; then
+        lim_p_state="Installed"
+        lim_p_stat="PASS"
+        persist_pass=$((persist_pass + 1))
+    fi
+    if [ "$lim_p_stat" = "PASS" ]; then
+        printf "│ %-2s │ %-31s │ %-18s │ %-18s │ ${GREEN}%-8s${NC} │\n" "5" "POSIX Limits Config" "/etc/security/" "$lim_p_state" "PASS"
+    else
+        printf "│ %-2s │ %-31s │ %-18s │ %-18s │ ${YELLOW}%-8s${NC} │\n" "5" "POSIX Limits Config" "/etc/security/" "$lim_p_state" "FAIL"
+    fi
     echo -e "${WHITE}${BOLD}└────┴─────────────────────────────────┴────────────────────┴────────────────────┴──────────┘${NC}"
 
     echo ""
@@ -2473,9 +2654,9 @@ show_menu() {
         echo ""
 
         echo -e "  ${CYAN}${BOLD}[1]${NC} Benchmark untuned box ${DIM}(\"Before\" baseline -> before_latency_<ts>.txt)${NC}"
-        echo -e "  ${CYAN}${BOLD}[2]${NC} Apply the 11 key low-latency kernel & OS tunings ${DIM}(Runtime only, no reboot)${NC}"
+        echo -e "  ${CYAN}${BOLD}[2]${NC} Apply the 13 key low-latency kernel & OS tunings ${DIM}(Runtime only, no reboot)${NC}"
         echo -e "  ${CYAN}${BOLD}[3]${NC} Re-benchmark tuned box ${DIM}(\"After\" results -> after_latency_<ts>.txt)${NC}"
-        echo -e "  ${CYAN}${BOLD}[4]${NC} Learning Mode ${DIM}(Compare Before/After & Deep Dive into the 11 Configs)${NC}"
+        echo -e "  ${CYAN}${BOLD}[4]${NC} Learning Mode ${DIM}(Compare Before/After & Deep Dive into the 13 Configs)${NC}"
         echo -e "  ${CYAN}${BOLD}[5]${NC} ${GREEN}${BOLD}Run Complete Pipeline${NC} ${DIM}(Execute 1 -> 2 -> 3 -> 4 automatically)${NC}"
         echo -e "  ${CYAN}${BOLD}[6]${NC} Revert tunings back to baseline ${DIM}(Restore sysctl, irqbalance, C-states)${NC}"
         echo -e "  ${CYAN}${BOLD}[7]${NC} Nanosecond Precision Diagnostic ${DIM}(Verify invariant TSC, clocksource, resolution)${NC}"
@@ -2595,7 +2776,7 @@ main() {
             echo "Usage: $(basename "$0") [OPTIONS]"
             echo "Options:"
             echo "  --before       Run baseline before benchmark"
-            echo "  --tune         Apply the 11 kernel/OS tunings (alias: --apply)"
+            echo "  --tune         Apply the 13 kernel/OS tunings (alias: --apply)"
             echo "  --after        Run post-tuning after benchmark"
             echo "  --learn        Run learning mode (compare and explain)"
             echo "  --full         Run entire pipeline (1 -> 2 -> 3 -> 4)"

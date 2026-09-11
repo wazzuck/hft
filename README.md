@@ -304,10 +304,10 @@ sudo ./hft_tuning.sh --verify
 ## 🚀 GRUB / Kernel Boot Parameters (Production & Deterministic)
 
 ### Safe, Production-Grade Master Boot String (Cores 1–N Isolated)
-For modern Linux distributions (AlmaLinux 10 / RHEL 10, kernel 6.12+), apply this safe, deterministic boot parameter string:
+For modern Linux distributions (AlmaLinux 10 / RHEL 10 / Ubuntu 24.04, kernel 6.12+), apply this safe, deterministic boot parameter string:
 
 ```text
-isolcpus=domain,nohz,1-15 nohz=on nohz_full=1-15 rcu_nocbs=1-15 rcupdate.rcu_normal_after_boot=1 skew_tick=1 nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=2M hugepages=2048 pcie_aspm=off mitigations=off
+isolcpus=domain,nohz,1-15 nohz=on nohz_full=1-15 rcu_nocbs=1-15 rcupdate.rcu_normal_after_boot=1 skew_tick=1 preempt=full nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=2M hugepages=2048 pcie_aspm=off mitigations=off
 ```
 
 ### Parameter Breakdown & Architectural Rationale
@@ -320,6 +320,7 @@ isolcpus=domain,nohz,1-15 nohz=on nohz_full=1-15 rcu_nocbs=1-15 rcupdate.rcu_nor
 | **Core Shielding** | `rcu_nocbs=1-15` | Offloads RCU garbage collection callbacks away from trading cores to housekeeping Core 0. |
 | **Core Shielding** | `rcupdate.rcu_normal_after_boot=1` | Accelerates boot via expedited grace periods, then restores non-disruptive normal RCU at runtime. |
 | **Core Shielding** | `skew_tick=1` | Desynchronizes timer interrupts across CPU cores to prevent simultaneous memory bus stampedes. |
+| **Kernel Preemption** | `preempt=full` | Forces full preemption across all non-atomic kernel execution paths, slashing timer dispatch latency tail. |
 | **Hardware Determinism** | `nosmt` | Disables hyperthreading / SMT at the kernel entry point. |
 | **Hardware Determinism** | `audit=0` | Strips kernel system call audit logging (~30ns saved per syscall). |
 | **Hardware Determinism** | `mce=ignore_ce` | Prevents CPU execution stalls when hardware correctable memory/bus errors occur. |
@@ -505,9 +506,9 @@ For a completely automated, zero-touch tear-down and rebuild of the AlmaLinux si
 
 ---
 
-## ⚡ The Top 11 Runtime Kernel & OS Tunings
+## ⚡ The Top 13 Runtime Kernel & OS Tunings
 
-These 11 configurations are applied at runtime by [`hft_tuning.sh`](file:///home/neville/hft/hft_tuning.sh) without requiring a system reboot:
+These 13 configurations are applied at runtime by [`hft_tuning.sh`](file:///home/neville/hft/hft_tuning.sh) without requiring a system reboot:
 
 | # | Tuning Subsystem | Runtime Command | HFT Latency Impact |
 | :--- | :--- | :--- | :--- |
@@ -522,6 +523,8 @@ These 11 configurations are applied at runtime by [`hft_tuning.sh`](file:///home
 | **9** | **TCP Slow Start After Idle** | `sysctl net.ipv4.tcp_slow_start_after_idle = 0` | Immediate line-rate burst after silence |
 | **10**| **IRQ Shielding & Core Pinning** | `systemctl stop irqbalance`<br>`default_smp_affinity = 1` (Core 0) | Shields trading core from hardware IRQs |
 | **11**| **Static 2MB Hugepages (4GB)** | `sysctl vm.nr_hugepages = 2048`<br>`mount -t hugetlbfs nodev /dev/hugepages` | Pre-allocates 4GB static pages; 3-level page tables; 0 TLB stalls |
+| **12**| **POSIX Real-Time & Memlock Limits** | `/etc/security/limits.d/99-hft.conf`<br>`systemd DefaultLimitMEMLOCK=infinity` | Enables `mlockall` & `SCHED_FIFO` 99 for trading daemons |
+| **13**| **PCIe Network MaxReadReq (4096B)** | `setpci -s <bdf> CAP_EXP+8.w=5000:7000`<br>`echo full > /sys/kernel/debug/sched/preempt` | Maximizes PCIe DMA burst efficiency; forces full kernel preemption |
 
 > [!NOTE]
 > **\*Note on Automatic NUMA Balancing:** On enterprise multi-NUMA server platforms, disabling NUMA balancing stops background thread page migration stalls across sockets. On high-frequency single-NUMA AMD Ryzen architectures, this is not strictly required as memory access is already uniform (UMA), though retaining the setting remains recommended practice to eliminate background kernel scanning threads.
@@ -669,17 +672,17 @@ Simply launch the script without arguments to open the visual TUI:
 
 ```text
   ╔══════════════════════════════════════════════════════════════════════════╗
-  ║       ⚡ HFT LOW-LATENCY KERNEL & OS TUNING SUITE (TOP 10) ⚡            ║
+  ║       ⚡ HFT LOW-LATENCY KERNEL & OS TUNING SUITE (TOP 13) ⚡            ║
   ║      Nanosecond Precision Microbenchmarks • Multi-NUMA Ready             ║
   ╚══════════════════════════════════════════════════════════════════════════╝
 
-  System Topology: 4 Logical Cores | 1 NUMA Node(s)
-  Storage Output : /home/neville/results
+  System Topology: 16 Logical Cores | 1 NUMA Node(s)
+  Storage Output : /home/neville/hft/results
 
   [1] Benchmark untuned box ("Before" baseline -> before_latency_<ts>.txt)
-  [2] Apply the 10 key low-latency kernel & OS tunings (Runtime only, no reboot)
+  [2] Apply the 13 key low-latency kernel & OS tunings (Runtime only, no reboot)
   [3] Re-benchmark tuned box ("After" results -> after_latency_<ts>.txt)
-  [4] Learning Mode (Compare Before/After & Deep Dive into the 10 Configs)
+  [4] Learning Mode (Compare Before/After & Deep Dive into the 13 Configs)
   [5] Run Complete Pipeline (Execute 1 -> 2 -> 3 -> 4 automatically)
   [6] Revert tunings back to baseline (Restore sysctl, irqbalance, C-states)
   [7] Nanosecond Precision Diagnostic (Verify invariant TSC, clocksource, resolution)
@@ -696,7 +699,7 @@ For scriptable CI/CD pipelines or remote execution via SSH:
 ./hft_tuning.sh --apply-grub   # Apply boot parameters, install persistence & prompt reboot
 ./hft_tuning.sh --persist      # Install reboot persistence engine without bootloader edit
 ./hft_tuning.sh --before       # Run baseline before benchmark
-./hft_tuning.sh --tune         # Apply the 10 runtime tunings (alias: --apply)
+./hft_tuning.sh --tune         # Apply the 13 runtime tunings (alias: --apply)
 ./hft_tuning.sh --after        # Run post-tuning after benchmark
 ./hft_tuning.sh --learn        # Print side-by-side comparison matrix & deep dive
 ./hft_tuning.sh --revert       # Reset all settings to baseline & remove persistence
