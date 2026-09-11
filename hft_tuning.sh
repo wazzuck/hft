@@ -1018,10 +1018,11 @@ apply_ten_tunings() {
     sudo sysctl -w kernel.numa_balancing=0 >/dev/null 2>&1 || true
     print_success "kernel.numa_balancing = 0 (kills background NUMA scanner)"
 
-    # 5. Virtual Memory Swappiness = 0
-    print_subheader "5. Eliminating Anonymous Memory Swapping (vm.swappiness = 0)"
+    # 5. Virtual Memory Swappiness = 0 & Direct Reclaim Shield (min_free_kbytes = 1GB)
+    print_subheader "5. Eliminating Swapping (vm.swappiness = 0) & Direct Reclaim Shield (min_free_kbytes = 1GB)"
     sudo sysctl -w vm.swappiness=0 >/dev/null 2>&1 || true
-    print_success "vm.swappiness = 0 (prevents memory page-out stalls)"
+    sudo sysctl -w vm.min_free_kbytes=1048576 >/dev/null 2>&1 || true
+    print_success "vm.swappiness = 0, vm.min_free_kbytes = 1048576 (1GB emergency pool prevents direct reclaim)"
 
     # 6. Reduce VM Stat Timer Interruption
     print_subheader "6. Suppressing VM Stat Timer Interrupts (vm.stat_interval = 120)"
@@ -1049,12 +1050,13 @@ apply_ten_tunings() {
     hp_avail="$(grep -i "HugePages_Total" /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "0")"
     print_success "Pre-allocated $hp_avail x 2MB static hugepages for zero-copy UMEM & order books."
 
-    # 8. Network Low-Latency Socket Busy-Polling & NIC Kernel-Bypass Optimization
+    # 8. Network Low-Latency Socket Busy-Polling & NIC Hardware Ring Optimization
     print_subheader "8. Socket Low-Latency Busy-Polling & NIC Hardware Ring Optimization"
     sudo sysctl -w net.core.busy_poll=50 >/dev/null 2>&1 || true
     sudo sysctl -w net.core.busy_read=50 >/dev/null 2>&1 || true
     sudo sysctl -w net.core.netdev_max_backlog=250000 >/dev/null 2>&1 || true
-    print_success "net.core.busy_poll = 50us, busy_read = 50us (active socket spin)"
+    sudo sysctl -w net.core.default_qdisc=pfifo_fast >/dev/null 2>&1 || true
+    print_success "net.core.busy_poll = 50us, busy_read = 50us, default_qdisc = pfifo_fast"
 
     # Hardware NIC / Intel E810 & 10GbE Ring & Coalescing Optimization
     local nic_tuned=false
@@ -1063,17 +1065,23 @@ apply_ten_tunings() {
             sudo ethtool -G "$iface" rx 1024 tx 1024 >/dev/null 2>&1 || sudo ethtool -G "$iface" rx 4096 tx 4096 >/dev/null 2>&1 || true
             sudo ethtool -C "$iface" adaptive-rx off adaptive-tx off rx-usecs 0 tx-usecs 0 >/dev/null 2>&1 || true
             sudo ethtool -K "$iface" gro off lro off tso off gso off ntuple on >/dev/null 2>&1 || sudo ethtool -K "$iface" gro off lro off tso off gso off >/dev/null 2>&1 || true
-            print_success "NIC $iface: Ring buffers optimized, adaptive coalescing disabled (0us), offloads stripped."
+            sudo tc qdisc replace dev "$iface" root pfifo_fast >/dev/null 2>&1 || sudo tc qdisc replace dev "$iface" root mq >/dev/null 2>&1 || true
+            print_success "NIC $iface: Ring buffers optimized, adaptive coalescing disabled (0us), offloads stripped, qdisc pfifo_fast."
             nic_tuned=true
         fi
     done
     [ "$nic_tuned" = false ] && print_info "Hardware NIC rings tuned via kernel defaults / virtual adapter."
 
-    # 9. TCP Slow Start After Idle Disabled
-    print_subheader "9. TCP Slow Start After Idle Disabled (tcp_slow_start_after_idle = 0)"
+    # 9. TCP Slow Start After Idle & Immediate Serialization (tcp_autocorking = 0)
+    print_subheader "9. TCP Immediate Serialization (autocorking = 0, slow_start_after_idle = 0)"
     sudo sysctl -w net.ipv4.tcp_slow_start_after_idle=0 >/dev/null 2>&1 || true
     sudo sysctl -w net.ipv4.tcp_timestamps=0 >/dev/null 2>&1 || true
-    print_success "tcp_slow_start_after_idle = 0 (instant line-rate burst after idle)"
+    sudo sysctl -w net.ipv4.tcp_autocorking=0 >/dev/null 2>&1 || true
+    sudo sysctl -w net.ipv4.tcp_no_metrics_save=1 >/dev/null 2>&1 || true
+    sudo sysctl -w net.ipv4.tcp_moderate_rcvbuf=0 >/dev/null 2>&1 || true
+    sudo sysctl -w net.ipv4.udp_rmem_min=16384 >/dev/null 2>&1 || true
+    sudo sysctl -w net.ipv4.udp_wmem_min=16384 >/dev/null 2>&1 || true
+    print_success "TCP immediate serialization active: autocorking=0, no_metrics_save=1, slow_start_after_idle=0"
 
     # 10. Stop IRQBalance & Pin Peripheral IRQs to Housekeeping Core
     print_subheader "10. Disabling IRQBalance & Shielding Trading Cores from IRQs"
@@ -1172,11 +1180,20 @@ revert_tunings() {
     sudo sysctl -w \
         net.core.busy_poll=0 \
         net.core.busy_read=0 \
+        net.core.default_qdisc=fq_codel \
         vm.swappiness=30 \
         vm.stat_interval=1 \
+        vm.min_free_kbytes=45451 \
         kernel.numa_balancing=1 \
         net.ipv4.tcp_slow_start_after_idle=1 \
+        net.ipv4.tcp_autocorking=1 \
+        net.ipv4.tcp_no_metrics_save=0 \
+        net.ipv4.tcp_moderate_rcvbuf=1 \
         net.ipv4.tcp_timestamps=1 >/dev/null 2>&1 || true
+
+    for iface in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -v -E '^(lo|virbr|docker|veth)'); do
+        sudo tc qdisc replace dev "$iface" root fq_codel >/dev/null 2>&1 || sudo tc qdisc del dev "$iface" root >/dev/null 2>&1 || true
+    done
 
     if systemctl is-enabled --quiet irqbalance 2>/dev/null; then
         sudo systemctl start irqbalance >/dev/null 2>&1 || true
@@ -1695,6 +1712,9 @@ for iface in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -v -
         ethtool -C "$iface" adaptive-rx off adaptive-tx off rx-usecs 0 tx-usecs 0 2>/dev/null || true
         ethtool -K "$iface" gro off lro off tso off gso off ntuple on 2>/dev/null || ethtool -K "$iface" gro off lro off tso off gso off 2>/dev/null || true
     fi
+    if command -v tc >/dev/null 2>&1; then
+        tc qdisc replace dev "$iface" root pfifo_fast 2>/dev/null || tc qdisc replace dev "$iface" root mq 2>/dev/null || true
+    fi
 done
 
 for bdf in $(lspci -D -d ::0200 2>/dev/null | awk '{print $1}'); do
@@ -1763,8 +1783,10 @@ kernel.numa_balancing = 0
 vm.swappiness = 0
 vm.stat_interval = 120
 vm.nr_hugepages = 2048
+vm.min_free_kbytes = 1048576
 net.core.busy_poll = 50
 net.core.busy_read = 50
+net.core.default_qdisc = pfifo_fast
 net.core.netdev_max_backlog = 250000
 net.core.rmem_max = 134217728
 net.core.wmem_max = 134217728
@@ -1776,6 +1798,11 @@ net.ipv4.tcp_rmem = 4096 87380 67108864
 net.ipv4.tcp_wmem = 4096 65536 67108864
 net.ipv4.tcp_max_syn_backlog = 3240000
 net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_autocorking = 0
+net.ipv4.tcp_no_metrics_save = 1
+net.ipv4.tcp_moderate_rcvbuf = 0
+net.ipv4.udp_rmem_min = 16384
+net.ipv4.udp_wmem_min = 16384
 net.ipv4.tcp_timestamps = 0
 net.ipv4.tcp_sack = 1
 net.ipv4.tcp_dsack = 0

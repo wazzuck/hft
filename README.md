@@ -392,14 +392,15 @@ The Reboot Persistence Engine guarantees that **100% of tunings remain in place 
 
 1. **/etc/sysctl.d/99-hft-tuning.conf**:
    - Evaluated at boot by `systemd-sysctl`.
-   - Locks in `swappiness=0`, `numa_balancing=0`, `stat_interval=120`, socket `busy_poll=50`, `busy_read=50`, and 128MB network buffers.
+   - Locks in `swappiness=0`, `vm.min_free_kbytes=1048576` (1GB emergency pool against direct reclaim freezes), `numa_balancing=0`, `stat_interval=120`, socket `busy_poll=50`, `busy_read=50`, `default_qdisc=pfifo_fast`, `tcp_autocorking=0` (immediate packet serialization), `tcp_no_metrics_save=1`, `tcp_moderate_rcvbuf=0`, UDP buffer mins, and 128MB network buffers.
 2. **/usr/local/bin/hft-boot-tune.sh & /etc/systemd/system/hft-tuning.service**:
    - Executes during early boot prior to trading applications.
    - Forces CPU governor to `performance` across all cores and pins min frequency to max frequency.
    - Sets scheduler migration cost to 5,000,000ns (5ms).
    - Hard-disables Transparent Huge Pages (`never`).
    - Masks and stops `irqbalance`, pinning all device IRQs to Core 0 (Housekeeping).
-   - Programs physical NICs to 4096 descriptor rings, `rx-usecs 0`, and disables GRO/LRO/TSO offloads.
+   - Programs physical NICs to 1024/4096 descriptor rings, `rx-usecs 0`, disables GRO/LRO/TSO offloads, and replaces root qdisc with lockless `pfifo_fast`.
+   - Sets PCIe network controllers to MaxReadReq 4096B and switches kernel preemption to `full`.
 3. **/etc/systemd/system/hft-dma-latency.service**:
    - Dedicated systemd service managing `/usr/local/bin/hft_dma_latency`.
    - Opens `/dev/cpu_dma_latency` and locks CPU DMA exit latency to `0us` continuously with `Restart=always` supervisor protection.
@@ -516,11 +517,11 @@ These 13 configurations are applied at runtime by [`hft_tuning.sh`](file:///home
 | **2** | **PM QoS C-State Elimination** | `/dev/cpu_dma_latency = 0` (Background Lock) | Locks core in C0 (0µs exit latency) |
 | **3** | **CFS Task Migration Cost** | `/sys/kernel/debug/sched/migration_cost_ns = 5,000,000 ns` (5ms) | Prevents thread thrashing / cache pollution |
 | **4** | **Automatic NUMA Balancing\*** | `sysctl kernel.numa_balancing = 0` | Stops background page scanning thread |
-| **5** | **Virtual Memory Swappiness** | `sysctl vm.swappiness = 0` | Strictly forbids memory paging |
+| **5** | **VM Swappiness & Emergency Reserve** | `sysctl vm.swappiness = 0`<br>`sysctl vm.min_free_kbytes = 1048576` | Forbids swapping & reserves 1GB pool to prevent direct reclaim stalls |
 | **6** | **VM Stat Timer Interruption** | `sysctl vm.stat_interval = 120` | Suppresses 1 Hz timer tick interrupts |
 | **7** | **Transparent Hugepages (THP)** | `transparent_hugepage/enabled = never`<br>`transparent_hugepage/defrag = never` | Eliminates runtime compaction stalls |
-| **8** | **Socket Busy-Polling & NIC Ring**| `sysctl net.core.busy_poll = 50`<br>`ethtool -G rx 1024 tx 1024` | Eliminates interrupt sleep; L2/L3 ring residency |
-| **9** | **TCP Slow Start After Idle** | `sysctl net.ipv4.tcp_slow_start_after_idle = 0` | Immediate line-rate burst after silence |
+| **8** | **Socket Busy-Polling, Ring & Qdisc**| `sysctl net.core.busy_poll = 50`<br>`sysctl net.core.default_qdisc = pfifo_fast`<br>`ethtool -G rx 1024 tx 1024` | Eliminates interrupt sleep; replaces fq_codel with lockless O(1) FIFO |
+| **9** | **TCP Serialization & Metrics** | `sysctl net.ipv4.tcp_slow_start_after_idle = 0`<br>`sysctl net.ipv4.tcp_autocorking = 0`<br>`sysctl net.ipv4.tcp_no_metrics_save = 1` | Immediate packet serialization; disables coalescing delay & route cache stalls |
 | **10**| **IRQ Shielding & Core Pinning** | `systemctl stop irqbalance`<br>`default_smp_affinity = 1` (Core 0) | Shields trading core from hardware IRQs |
 | **11**| **Static 2MB Hugepages (4GB)** | `sysctl vm.nr_hugepages = 2048`<br>`mount -t hugetlbfs nodev /dev/hugepages` | Pre-allocates 4GB static pages; 3-level page tables; 0 TLB stalls |
 | **12**| **POSIX Real-Time & Memlock Limits** | `/etc/security/limits.d/99-hft.conf`<br>`systemd DefaultLimitMEMLOCK=infinity` | Enables `mlockall` & `SCHED_FIFO` 99 for trading daemons |
