@@ -1323,6 +1323,31 @@ learning_mode() {
     Default Linux governors (ondemand, powersave, schedutil) sample CPU load at intervals (10-20ms).
     During quiet order-book intervals, the governor down-clocks the core to lower P-states. When a sudden
     market burst arrives, the CPU takes 10 to 50 milliseconds to ramp up clock multipliers.
+
+    ┌─────────────────────────────────────────────────────────────────┐
+    │ CPU FREQUENCY GOVERNORS: Market Data Burst Scenario              │
+    ├─────────────────────────────────────────────────────────────────┤
+    │                                                                 │
+    │ "ondemand" / "schedutil" governor (DEFAULT):                     │
+    │                                                                 │
+    │ Freq   5.7 GHz ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─╱─────────      │
+    │        4.0 GHz ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─╱               │
+    │        2.2 GHz ──────────────────────────╱    10-50ms ramp!  │
+    │        ─────────┼────────────────────────┼─────────────────   │
+    │                 │ Quiet period           │ Burst arrives       │
+    │                 │ (core idle, low freq)  │ (algo needs MHz!)   │
+    │                                                                 │
+    │ "performance" governor (OUR TUNING):                             │
+    │                                                                 │
+    │ Freq   5.7 GHz ─────────────────────────────────────────────    │
+    │        ─────────┼────────────────────────┼─────────────────   │
+    │                 │ Quiet period           │ Burst arrives       │
+    │                 │ (core AT MAX FREQ)     │ (instant response!) │
+    │                                                                 │
+    │ MARKET DATA ANALOGY: It's the difference between having your    │
+    │ trading terminal asleep vs powered on and ready at your desk.   │
+    └─────────────────────────────────────────────────────────────────┘
+
   • Multi-NUMA HFT Impact:
     Pins all cores across both NUMA sockets to maximum frequency. Guarantees zero frequency ramp-up latency.
 EOF_T1
@@ -1361,6 +1386,25 @@ EOF_T2
   • Kernel/Hardware Mechanism:
     CFS continuously tries to balance load. If another core becomes idle, CFS may steal your trading thread.
     Migrating across physical cores flushes L1 (32KB) and L2 (512KB-1MB) caches.
+
+    ┌─────────────────────────────────────────────────────────────────┐
+    │ CFS THREAD MIGRATION: Cache Destruction Scenario                │
+    ├─────────────────────────────────────────────────────────────────┤
+    │                                                                 │
+    │ Core 1 (your algo running here)      Core 5 (idle)              │
+    │ ┌────────────────────────┐           ┌────────────────────────┐ │
+    │ │ L1: Order book (HOT)   │           │ L1: (empty)            │ │
+    │ │ L2: Symbol tables (HOT)│ ──CFS──> │ L2: (empty)            │ │
+    │ │ State: WARM, fast      │ migrate  │ State: COLD, slow      │ │
+    │ └────────────────────────┘           └────────────────────────┘ │
+    │                                                                 │
+    │ After migration: 10-50 µs of cache misses as your order book,   │
+    │ symbol lookups, and strategy state must be reloaded from L3/DRAM│
+    │                                                                 │
+    │ FIX: migration_cost_ns=5000000 (5ms) tells CFS:                 │
+    │ "Don't move this thread unless it's been idle for 5ms."         │
+    └─────────────────────────────────────────────────────────────────┘
+
   • Multi-NUMA HFT Impact:
     CRITICAL on multi-NUMA hosts! Bouncing a thread to a different NUMA node turns local memory access into
     remote memory access across the slow UPI/QPI interconnect (~40ns local vs ~100ns remote). A high
@@ -1375,6 +1419,25 @@ EOF_T3
   • Kernel/Hardware Mechanism:
     The kernel's 'task_numa_work' thread periodically unmaps page table entries to force minor page faults.
     By observing which node generated the fault, it decides whether to copy the physical page across sockets.
+
+    ┌─────────────────────────────────────────────────────────────────┐
+    │ NUMA BALANCING: Automatic Page Migration (Multi-Socket)         │
+    ├─────────────────────────────────────────────────────────────────┤
+    │                                                                 │
+    │ ┌──────────────────┐   UPI/QPI Bus   ┌──────────────────┐      │
+    │ │  NUMA Node 0     │ <──100ns delay──>│  NUMA Node 1     │      │
+    │ │  Socket 0        │                  │  Socket 1        │      │
+    │ │  Local DDR5      │                  │  Local DDR5      │      │
+    │ │  ~40ns access    │                  │  ~40ns access    │      │
+    │ └──────────────────┘                  └──────────────────┘      │
+    │                                                                 │
+    │ NUMA balancer sees your trading thread runs on Node 1 but        │
+    │ some pages are on Node 0. It COPIES pages across the bus.        │
+    │ During the copy: page fault stall = 5-50 µs freeze!             │
+    │                                                                 │
+    │ FIX: numa_balancing=0 → pages stay exactly where you put them.  │
+    └─────────────────────────────────────────────────────────────────┘
+
   • Multi-NUMA HFT Impact:
     In HFT, this introduces unpredictable multi-microsecond page fault stalls. Disabling it ensures that
     memory allocated on the local NUMA node remains pinned exactly where intended.
@@ -1385,9 +1448,30 @@ EOF_T4
     echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     cat << "EOF_T5"
   • What it does: Strictly forbids the kernel from swapping anonymous process memory to disk.
+    Also reserves 1GB (vm.min_free_kbytes=1048576) as an emergency memory pool.
   • Kernel/Hardware Mechanism:
     When Linux buffers filesystem data, swappiness > 0 allows the kernel to page out application heap/stack
     to make room for disk page caches. Accessing swapped memory causes major page faults requiring disk I/O.
+
+    ┌─────────────────────────────────────────────────────────────────┐
+    │ SWAPPINESS: Where Your Order Book Lives                         │
+    ├─────────────────────────────────────────────────────────────────┤
+    │                                                                 │
+    │ Physical DRAM (DDR5):     ~60-80 ns access ←── You want this!  │
+    │ NVMe SSD (swap space):    ~10,000 ns access (100x slower!)      │
+    │ SATA SSD (swap space):    ~100,000 ns access (1000x slower!)    │
+    │                                                                 │
+    │ With swappiness > 0, Linux can evict your order book from DRAM  │
+    │ to make room for filesystem caches (log files, temp data).      │
+    │ Next time you access that order book page: MAJOR PAGE FAULT!    │
+    │ Your algo freezes for 10-100 µs while the page is loaded back.  │
+    │                                                                 │
+    │ FIX: swappiness=0 → application memory NEVER gets swapped.      │
+    │ FIX: min_free_kbytes=1GB → reserves 1GB emergency pool so the   │
+    │      kernel never triggers "direct reclaim" (a synchronous       │
+    │      memory compaction that freezes ALL allocations).            │
+    └─────────────────────────────────────────────────────────────────┘
+
   • Multi-NUMA HFT Impact:
     Guarantees that your order books, ring buffers, and network structures stay in physical DRAM permanently.
 EOF_T5
@@ -1400,6 +1484,23 @@ EOF_T5
   • Kernel/Hardware Mechanism:
     By default, Linux schedules a per-CPU timer tick interrupt every 1 second on EVERY core to execute
     'vmstat_update()'. This creates a recurring 1 Hz jitter spike across trading cores.
+
+    ┌─────────────────────────────────────────────────────────────────┐
+    │ VMSTAT TIMER: Periodic Jitter on Trading Cores                  │
+    ├─────────────────────────────────────────────────────────────────┤
+    │                                                                 │
+    │ DEFAULT (vm.stat_interval=1):                                    │
+    │ Core 1 ──────[V]──────[V]──────[V]──────[V]──────[V]──────     │
+    │              1s       2s       3s       4s       5s             │
+    │ [V] = vmstat_update() interrupt = 1-3 µs jitter spike           │
+    │ That's 60 interrupts per minute on your trading core!           │
+    │                                                                 │
+    │ TUNED (vm.stat_interval=120):                                    │
+    │ Core 1 ──────────────────────────────────────[V]──────────      │
+    │                                              120s               │
+    │ Only 1 interrupt every 2 minutes = 99.2% reduction!             │
+    └─────────────────────────────────────────────────────────────────┘
+
   • Multi-NUMA HFT Impact:
     Slashes periodic vmstat timer interruptions by 99.2%, significantly reducing peak jitter pauses.
 EOF_T6
@@ -1501,6 +1602,24 @@ EOF_T9
   • Kernel/Hardware Mechanism:
     The irqbalance daemon dynamically rotates device interrupts (NICs, NVMe, timers) across cores to distribute heat.
     Every interrupt sent to a trading core pauses your execution loop to run the kernel's top-half ISR.
+
+    ┌─────────────────────────────────────────────────────────────────┐
+    │ IRQ SHIELDING: Protecting Trading Cores                         │
+    ├─────────────────────────────────────────────────────────────────┤
+    │                                                                 │
+    │ WITHOUT SHIELDING (irqbalance active):                          │
+    │ Core 0 ───[IRQ]──────────[IRQ]────────────── (housekeeping)    │
+    │ Core 1 ──────[IRQ]───[IRQ]──────[IRQ]─────── (your algo!)     │
+    │ Core 2 ─[IRQ]──────────────[IRQ]──────────── (idle)            │
+    │ Each IRQ on Core 1 = 1-5 µs pause + cache pollution!           │
+    │                                                                 │
+    │ WITH SHIELDING (our tuning):                                    │
+    │ Core 0 ─[IRQ][IRQ][IRQ][IRQ][IRQ]─────────── (all IRQs here)  │
+    │ Core 1 ──────────────────────────────────── (algo: CLEAN)      │
+    │ Core 2 ──────────────────────────────────── (isolated: CLEAN)  │
+    │ Trading cores run with ZERO hardware interruptions.             │
+    └─────────────────────────────────────────────────────────────────┘
+
   • Multi-NUMA HFT Impact:
     On multi-NUMA systems, Node 0 handles all peripheral and OS interrupts, leaving Node 1 cores 100% shielded.
 EOF_T10
