@@ -1,0 +1,47 @@
+{
+  "capture_timestamp_utc": "2026-09-11T11:19:14Z",
+  "hostname": "better-grizzly",
+  "os": {
+    "pretty_name": "Ubuntu 24.04.4 LTS",
+    "kernel_release": "6.17.0-23-generic",
+    "architecture": "x86_64",
+    "clocksource": "tsc",
+    "cmdline": "BOOT_IMAGE=/boot/vmlinuz-6.17.0-23-generic root=UUID=1c1d9c44-9763-4c41-bdba-188e7d220bf2 ro isolcpus=domain,nohz,1-15 nohz=on nohz_full=1-15 rcu_nocbs=1-15 rcupdate.rcu_normal_after_boot=1 skew_tick=1 preempt=full nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=2M hugepages=2048 pcie_aspm=off mitigations=off"
+  },
+  "system": {
+    "manufacturer": "Supermicro",
+    "product_name": "AS -3015MR-H8TNR",
+    "product_version": "0123456789",
+    "motherboard_model": "H13SRD-F",
+    "motherboard_vendor": "Supermicro",
+    "bios_vendor": "American Megatrends International, LLC.",
+    "bios_version": "1.8",
+    "bios_release_date": "12/23/2025"
+  },
+  "processor": {
+    "model": "AMD Ryzen 9 9950X 16-Core Processor",
+    "sockets": "1",
+    "cores_per_socket": "16",
+    "threads_per_core": "1",
+    "total_logical_cpus": "16",
+    "online_cpus": "0-15",
+    "offline_cpus": "",
+    "max_frequency_mhz": "",
+    "scaling_governor": "unknown",
+    "smt_control": "notsupported",
+    "cstate_driver": "none",
+    "numa_nodes": "1",
+    "cache": {
+      "l1d": "768 KiB (16 instances)",
+      "l1i": "512 KiB (16 instances)",
+      "l2": "16 MiB (16 instances)",
+      "l3": "64 MiB (2 instances)"
+    }
+  },
+  "memory": {
+    "total_gb": "123.4",
+    "total_kb": "129420476",
+    "available_kb": "117827264",
+    "swap_total_kb": "8388604"
+  }
+}
