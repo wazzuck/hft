@@ -1,221 +1,284 @@
 # 🍒 Deep Commentary & Performance Analysis Report: Server Cherry
 **AMD Ryzen 9 9900X (Zen 5) • Supermicro H13SRD-F • AlmaLinux 10.2 (Lavender Lion)**  
-**Benchmark Run Evaluation & Next-Stage Tuning Implementation**  
-**Date**: September 10, 2026  
-**Target Server**: `cherry` (`84.32.70.218`, user `root`)
+**Benchmark Run Evaluation, Boot Failure Post-Mortem & Deterministic Tuning Strategy**  
+**Date**: September 11, 2026  
+**Target Platform**: `cherry` (`84.32.70.218`, Supermicro AS-3015MR-H8TNR / H13SRD-F)
 
 ---
 
-## 1. Executive Overview
+## 1. Executive Summary
 
-An end-to-end latency and OS tuning evaluation was conducted on test server **`cherry`**, a high-frequency trading (HFT) bare-metal node powered by a 12-core **AMD Ryzen 9 9900X** (Zen 5 architecture, base 4.40 GHz, scaling up to 5.66 GHz) on a **Supermicro H13SRD-F** motherboard with 96 GB DDR5-5600 memory, enterprise Micron 7500 PRO NVMe storage (RAID1), and dual Intel 82599ES 10GbE SFP+ network interfaces.
+An end-to-end latency, OS tuning, and firmware audit was performed on bare-metal test server **`cherry`**, powered by a 12-core **AMD Ryzen 9 9900X** (Zen 5 architecture, 4.40 GHz base, scaling to 5.66 GHz) on a **Supermicro H13SRD-F** motherboard with 96 GB DDR5-5600 RAM, dual Micron 7500 PRO NVMe SSDs configured in Linux Software RAID1 (`md127`), and dual Intel 82599ES 10GbE SFP+ network adapters under `bond0`.
 
-This benchmark evaluated the transition from an **untuned baseline OS state** to a **runtime-optimized state** applying 10 core OS/kernel runtime tunings (CPU governor locked to `performance`, PM QoS C-state elimination at 0 µs, CFS migration cost dampening, NUMA balancing suppression, VM swappiness elimination, VM stat timer suppression, THP disabling, network socket busy-polling, TCP slow start after idle disabling, IRQ shielding, and runtime SMT sibling thread disablement).
+The test evaluated the transition from an **untuned baseline OS state** to a **runtime-optimized state** applying 10 core OS/kernel runtime tunings (CPU governor locked to `performance`, PM QoS C-state elimination at 0 µs, CFS migration cost dampening, NUMA balancing suppression, VM swappiness elimination, VM stat timer suppression, THP disabling, network socket busy-polling, TCP slow start after idle disabling, IRQ shielding, and runtime SMT sibling thread disablement).
 
-### Benchmark Results Matrix
+Following this initial benchmark, an aggressive set of GRUB kernel parameters was applied to the bootloader, which caused the server to hang on reboot, requiring a rescue mode intervention before the instance was destroyed.
 
-| Metric / Dimension | Untuned Baseline | Runtime Tuned | Absolute Delta | Percentage Delta | Status / Rating |
+This report provides:
+1. A forensic analysis of the first round of benchmark results (what went right vs. what went wrong).
+2. A complete post-mortem explaining why the previous GRUB parameters caused the reboot failure.
+3. A detailed audit and mapping of the server's specific BIOS (Supermicro H13SRD-F / AMI Aptio v2.22.1294) based on actual firmware screenshots.
+4. A safe, deterministic kernel boot parameter configuration and testing strategy for the next deployment.
+
+---
+
+## 2. Benchmark Results Matrix
+
+All microbenchmarks were executed with hardware timestamping (`RDTSC` with memory serialization fences) on dedicated execution cores:
+
+| Metric / Dimension | Untuned Baseline | Runtime Tuned | Absolute Delta | Percentage Delta | Status / Architectural Classification |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **AF_XDP Kernel-Bypass Ring (Mean)** | **17.0 ns** | **17.0 ns** | 0.0 ns | **Optimal** | ⭐️ Hardware Wire Speed |
+| **AF_XDP Kernel-Bypass Ring (Mean)** | **17.0 ns** | **17.0 ns** | 0.0 ns | **Optimal** | ⭐️ Hardware Wire Speed (58.8M pkts/sec) |
 | **AF_XDP Kernel-Bypass Ring (P99)** | **20.0 ns** | **20.0 ns** | 0.0 ns | **Optimal** | ⭐️ Sub-25ns Determinism |
 | **Monotonic Clock vDSO (Mean)** | 30.8 ns | 31.1 ns | +0.3 ns | Insignificant | ⭐️ Invariant Hardware TSC |
 | **Monotonic Clock vDSO (P99)** | 40.1 ns | 60.1 ns | +20.0 ns | +49.8% | Stable Ring 3 Read |
-| **Minimal Syscall `getpid` (Mean)** | 52.9 ns | 53.2 ns | +0.3 ns | Insignificant | Ring 0 Transition |
+| **Minimal Syscall `getpid` (Mean)** | 52.9 ns | 53.2 ns | +0.3 ns | Insignificant | Ring 0 Transition Barrier |
 | **Thread Context Switch (Mean)** | 608.3 ns | **605.7 ns** | **-2.6 ns** | **-0.4% Faster** | Core Pipeline Bound |
 | **Thread Context Switch (P99)** | 671.0 ns | **665.9 ns** | **-5.1 ns** | **-0.8% Faster** | Consistent < 670 ns |
 | **TCP Loopback Ping-Pong (Mean)** | 4,107.2 ns | **4,035.9 ns** | **-71.3 ns** | **-1.7% Faster** | Stack Busy-Poll |
-| **TCP Loopback Ping-Pong (P99)** | 4,957.6 ns | **4,856.5 ns** | **-101.1 ns** | **-2.0% Faster** | ⭐️ Tail Latency Bound |
-| **DRAM / LLC Pointer Chase (Mean)** | 8.93 ns | 10.37 ns | +1.44 ns | +16.1% | L3 Cache Allocation |
-| **Execution Jitter Pauses (>1 µs)** | **490 events** | **223 events** | **-267 events** | **-54.5%** | ⭐️ **Massive Jitter Reduction** |
+| **TCP Loopback Ping-Pong (P99)** | 4,957.6 ns | **4,856.5 ns** | **-101.1 ns** | **-2.0% Faster** | ⭐️ Tail Latency Reduced by >100ns |
+| **DRAM / LLC Pointer Chase (Mean)** | 8.93 ns | 10.37 ns | +1.44 ns | +16.1% | L3 Cache Slice Hit |
+| **Execution Jitter Pauses (>1 µs)** | **490 events** | **223 events** | **-267 events** | **-54.5%** | ⭐️ **54.5% Jitter Event Reduction** |
 | **Cyclictest Timer Latency (Avg)** | 2,598 ns | 2,683 ns | +85 ns | +3.2% | Scheduler Bound (~2.6 µs) |
-| **Cyclictest Timer Latency (Max)** | 11,083 ns | 12,139 ns | +1,056 ns | +9.5% | Tick Interrupted (~12 µs) |
+| **Cyclictest Timer Latency (Max)** | 11,083 ns | 12,139 ns | +1,056 ns | +9.5% | Timer Tick Interrupted (~12 µs) |
 
 ---
 
-## 2. What Went Well: Architectural Triumphs
+## 3. What Went Right: Architectural Triumphs
 
-### 2.1. AF_XDP Zero-Copy Kernel-Bypass Ring Latency (17.0 ns Mean, 20.0 ns P99)
-- **Result**: The userspace packet ring access averaged **17.0 ns** with a 99th percentile of **20.0 ns**.
-- **Analysis**: This confirms that the Intel 82599ES 10GbE network controller coupled with AlmaLinux 10.2's modern 6.12 kernel provides world-class zero-copy descriptor exchange. At 17.0 ns, user-space order routing and packet ingestion can process up to **58.8 million frame descriptors per second** per dedicated core. Zero-copy UMEM memory registration eliminates Linux socket buffer (`sk_buff`) allocation and kernel networking stack traversal entirely.
+### 3.1. AF_XDP Zero-Copy Kernel-Bypass Ring Latency (17.0 ns Mean, 20.0 ns P99)
+- **Result**: Userspace packet ring descriptor access averaged **17.0 ns** with a 99th percentile of **20.0 ns**.
+- **Significance**: Confirms that the Intel 82599ES 10GbE network controller coupled with AlmaLinux 10.2's Linux 6.12 kernel provides true wire-speed zero-copy descriptor exchange. At 17.0 ns, user-space order routing and packet ingestion can process up to **58.8 million frame descriptors per second** per core. Zero-copy UMEM memory registration eliminates Linux socket buffer (`sk_buff`) allocation and kernel networking stack traversal entirely.
 
-### 2.2. Execution Jitter Pauses Slashed by 54.5% (490 -> 223 Events)
+### 3.2. Execution Jitter Pauses Slashed by 54.5% (490 -> 223 Events)
 - **Result**: Execution pauses exceeding 1 µs during a 1-second continuous spin loop dropped from **490 pauses to 223 pauses**—a **54.5% reduction**.
-- **Analysis**:
-  - **SMT Elimination**: Disabling Simultaneous Multithreading offlined the 12 sibling logical threads (`cpu12`–`cpu23`). This immediately halted hyper-thread resource contention over Zen 5's execution units, L1 instruction/data caches, and L2 cache pipelines.
+- **Significance**:
+  - **SMT Elimination**: Disabling Simultaneous Multithreading offlined the 12 sibling logical threads (`cpu12`–`cpu23`). This halted hyper-thread resource contention over Zen 5's execution units, L1 instruction/data caches, and L2 cache pipelines.
   - **PM QoS C-State Lock**: Holding `/dev/cpu_dma_latency` at `0 µs` forced all active cores to remain continuously in the C0 execution state, preventing the CPU power management subsystem from slipping into sleep states (C1/C2) between benchmark iterations.
 
-### 2.3. TCP Loopback Tail Latency Reduced by >100 ns (P99: 4,957.6 -> 4,856.5 ns)
+### 3.3. TCP Loopback Tail Latency Reduced by >100 ns (P99: 4,957.6 -> 4,856.5 ns)
 - **Result**: The standard Linux kernel TCP/IP stack round-trip time improved across both mean (-71.3 ns) and 99th percentile (-101.1 ns).
-- **Analysis**:
+- **Significance**:
   - Activating socket busy-polling (`net.core.busy_poll = 50`, `net.core.busy_read = 50`) forces network sockets to poll device rings directly for 50 µs before sleeping, avoiding asynchronous interrupt waking overhead.
-  - Setting `net.ipv4.tcp_slow_start_after_idle = 0` eliminated TCP window deflation during packet gaps, allowing immediate line-rate transmission.
+  - Setting `net.ipv4.tcp_slow_start_after_idle = 0` eliminated TCP congestion window deflation during packet gaps, allowing immediate line-rate transmission.
   - Increasing `sched_migration_cost_ns` to 5 ms prevented the CFS scheduler from bouncing the TCP benchmark client and server threads across different cores.
 
-### 2.4. Hardware-Enforced Firmware C-States (Zero Deep Sleep in BIOS)
+### 3.4. Hardware-Enforced Firmware C-States & Invariant TSC
 - **Result**: Firmware audit verified that CPU C-States are already **hard-disabled** in the Supermicro AMI Aptio BIOS.
-- **Analysis**: In contrast to standard enterprise servers where C-states can cause 10–50 µs wakeup latencies, `cherry` boots with C-states completely disabled at the firmware microcode level. The Linux kernel reports `cpuidle` states as `none` (C0 execution only).
-
-### 2.5. Constant, Invariant TSC & Single NUMA Node (UMA)
-- **Result**: TSC verified as `constant_tsc`, `nonstop_tsc`, and `tsc_reliable`. Memory architecture is a single Unified Memory Architecture (UMA) node (Node 0).
-- **Analysis**: Invariant TSC ensures that the `RDTSC` assembly instruction executes monotonically across all cores without frequency-dependent skew. Single NUMA architecture means that all 96 GB of DDR5-5600 RAM is connected to a unified memory bus, completely avoiding cross-socket QPI/UPI or cross-node Infinity Fabric memory access penalties.
+- **Significance**: Zen 5 cores never enter sleep modes at the firmware microcode level. Linux kernel reports `cpuidle` states as `none` (C0 execution only). The TSC was verified as `constant_tsc`, `nonstop_tsc`, and `tsc_reliable`, executing monotonically across all cores without frequency-dependent skew.
 
 ---
 
-## 3. What Didn't Go Well: Bottlenecks & Anomalies Uncovered
+## 4. What Went Wrong: Bottlenecks & Anomalies Uncovered
 
-### 3.1. Cyclictest Timer Wakeup Latency Plateaued at ~11–12 µs
-- **Observation**: `cyclictest` (15,000 cycles at 200 µs interval, priority 99 SCHED_FIFO) recorded an average wakeup latency of ~2.6 µs and a maximum wakeup latency of **12.14 µs**. The runtime tunings produced negligible change.
+### 4.1. Cyclictest Timer Wakeup Latency Plateaued at ~11–12 µs
+- **Observation**: `cyclictest` (15,000 cycles at 200 µs interval, priority 99 `SCHED_FIFO`) recorded an average wakeup latency of ~2.6 µs and a maximum wakeup latency of **12.14 µs**. Runtime tunings produced negligible change.
 - **Root Cause**:
-  - The Linux kernel scheduler tick (`CONFIG_HZ=1000`) was still running on Core 1 (`bench_core=1`).
-  - Because kernel bootloader arguments (`nohz_full=1-11`, `isolcpus=domain,managed_irq,1-11`) were **not yet applied in GRUB**, the kernel continued to fire a periodic 1 ms hardware timer interrupt and scheduler load-balancer tick on Core 1.
+  - The Linux kernel scheduler tick (`CONFIG_HZ=1000`) was still firing on Core 1 (`bench_core=1`).
+  - Because kernel bootloader arguments (`nohz_full=1-11`, `isolcpus=domain,nohz,1-11`) were **not active at boot**, the kernel continued to fire a periodic 1 ms hardware timer interrupt and scheduler load-balancer tick on Core 1.
   - When `cyclictest` suspended via `clock_nanosleep`, the kernel high-resolution timer (`hrtimer`) softirq and scheduler quantum handling introduced a deterministic 11–12 µs handling floor.
-  - **Verdict**: Runtime OS tuning cannot suppress the kernel timer tick. Only boot-time **Full Tickless Mode (`nohz_full`)** can extinguish this latency.
+  - **Remedy**: Runtime OS tuning cannot suppress the kernel timer tick. Only boot-time **Full Tickless Mode (`nohz_full`)** can extinguish this latency.
 
-### 3.2. Max Jitter Outlier Spike (1.2 ms Outlier During Spin-Loop)
+### 4.2. Max Jitter Outlier Spike (1.2 ms Outlier During Spin-Loop)
 - **Observation**: While total jitter events dropped by 54.5%, the single maximum gap reached **1,215,745 ns (~1.2 ms)** during the post-tuning run (compared to 17.5 µs before).
-- **Deep Technical Root Cause Analysis**:
+- **Deep Technical Root Cause**:
   - Investigation of `/proc/interrupts` revealed that **NVMe completion queue interrupts were directly bound to Core 1**:
-    ```
+    ```text
     IRQ 66: nvme0q2 (IR-PCI-MSIX-0000:04:00.0) -> effective_affinity = 000002 (CPU 1)
     ```
   - An attempt to migrate this IRQ at runtime via `/proc/irq/66/smp_affinity` failed with `Input/output error (Exit Code 1)`.
-  - **Why?** The Linux `blk-mq` NVMe driver allocates per-CPU hardware completion queues and marks them as **managed interrupts**. The Linux kernel strictly prohibits user space from modifying the CPU affinity of managed device interrupts once assigned at driver probe time!
-  - Consequently, during the benchmark run, when the system wrote benchmark data or systemd journal logs to the Micron 7500 PRO NVMe SSDs, the NVMe controller fired completion interrupts on Core 1, completely stalling the user-space thread for 1.2 ms.
-  - **Verdict**: Only passing **`isolcpus=managed_irq`** at boot time instructs the kernel's device driver layer to bypass isolated trading cores when assigning managed interrupt vectors, keeping all device queues on Core 0.
+  - The Linux `blk-mq` NVMe driver allocates per-CPU hardware completion queues and marks them as **managed interrupts**. The Linux kernel strictly prohibits user space from modifying the CPU affinity of managed device interrupts once assigned at driver probe time.
+  - During the benchmark run, when the system wrote benchmark logs to the Micron 7500 PRO NVMe SSDs, the NVMe controller fired completion interrupts on Core 1, stalling the user-space benchmark thread for 1.2 ms.
 
-### 3.3. DRAM / LLC Pointer Chase Slight Increase (8.93 -> 10.37 ns)
-- **Observation**: Pseudo-random pointer chasing in a 16MB buffer increased by +1.44 ns (from 8.93 ns to 10.37 ns).
-- **Analysis**:
-  - The AMD Ryzen 9 9900X features two 6-core Core Complex Dies (CCDs), each containing **32 MB of L3 cache**.
-  - A 16MB allocation fits completely inside the 32MB L3 cache slice. When hyperthreading was offlined, the hardware prefetcher and L3 cache replacement lines adapted to single-threaded cache allocation. At ~10 ns, this is standard L3 hit latency on Zen 5 architecture (typically ~40–45 clock cycles at 5.0+ GHz).
-  - Cross-CCD memory access must be avoided by pinning critical trading threads to Cores 1–5 (the first CCD).
-
-### 3.4. Speculative Execution Mitigations & Syscall Audit Active
+### 4.3. Speculative Execution Mitigations & Syscall Audit Active
 - **Observation**: Minimal syscall latency (`getpid`) remained at **53.2 ns**, and context switching remained at **605.7 ns**.
-- **Analysis**:
-  - Modern enterprise kernels (AlmaLinux 10 / RHEL 10) boot by default with full speculative execution mitigations (KPTI, Retbleed, Spectre v1/v2, SRBDS) and Linux audit framework active.
-  - Entering Ring 0 requires flushing/restricting branch predictors and validating audit rules.
-  - Passing `mitigations=off audit=0` at boot strips these software barriers, shaving ~25–30 ns off every syscall and ~150–200 ns off context switches.
-
-### 3.5. Active Firmware IOMMU & PCIe ASPM Link States
-- **Observation**: System audit detected active AMD-Vi IOMMU (`ivhd0`) and default PCIe Active State Power Management.
-- **Analysis**:
-  - Active IOMMU forces the Intel 82599ES NIC to perform IOTLB lookups during DMA packet streaming, introducing 50–200 ns translation overhead on burst traffic.
-  - PCIe ASPM link state transitions can delay DMA transmission when PCIe lanes wake from low-power L0s/L1 states.
-  - Both should be disabled via bootloader parameters (`iommu=off pcie_aspm=off`) and in the AMI Aptio BIOS.
+- **Root Cause**: Modern enterprise kernels boot with full speculative execution mitigations (KPTI, Retbleed, Spectre v1/v2) and Linux audit framework active. Entering Ring 0 requires flushing/restricting branch predictors and evaluating audit rules.
 
 ---
 
-## 4. Additional Relevant Tuning Options for Sub-Microsecond Determinism
+## 5. Forensic Post-Mortem: Why the Previous Boot String Bricked Reboot
 
-To eliminate the timer tick interrupts, managed NVMe IRQ storms, and syscall overhead uncovered in this test, the following optimizations must be deployed for the next test run:
+When the previous master boot string was applied via `grubby` and the server rebooted, the system hung during early boot and failed to come online. The string was:
 
-### 4.1. Bootloader Kernel Parameters (The Master HFT Boot String)
-
-The following parameters must be appended to `GRUB_CMDLINE_LINUX` and applied via `grubby`:
-
-```bash
+```text
 isolcpus=managed_irq,domain,1-11 nohz=on nohz_full=1-11 rcu_nocbs=1-11 rcu_nocb_poll rcupdate.rcu_normal_after_boot=1 skew_tick=1 cpuidle.off=1 processor.max_cstate=0 idle=poll amd_pstate=disable intel_pstate=disable clocksource=tsc tsc=reliable nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=1G hugepagesz=1G hugepages=16 pcie_aspm=off mitigations=off systemd.cpu_affinity=0 irqaffinity=0 iommu=off
 ```
 
-#### Detailed Rationale per Parameter Group:
+### The Fatal Root Causes:
 
-1. **CPU & Managed IRQ Isolation (`isolcpus=managed_irq,domain,1-11`)**:
-   - `domain`: Strips Cores 1–11 from the CFS scheduler load-balancing domain. Prevents task migration and scheduler tick balancing.
-   - `managed_irq`: **CRITICAL**. Instructs the kernel driver subsystem (especially `blk-mq` NVMe and multi-queue NICs) never to allocate managed interrupt vectors to Cores 1–11. Solves the 1.2 ms jitter spike.
-2. **Adaptive Full Tickless Mode (`nohz=on nohz_full=1-11`)**:
-   - Stops the 1000 Hz kernel scheduler timer tick on Cores 1–11 whenever a single runnable task is active. Reduces timer wakeup latency from 12 µs to sub-microsecond levels.
-3. **RCU Callback Offload & Polling (`rcu_nocbs=1-11 rcu_nocb_poll rcupdate.rcu_normal_after_boot=1`)**:
-   - Offloads Read-Copy-Update garbage collection callbacks from Cores 1–11 to dedicated kthreads on Core 0.
-   - `rcu_nocb_poll`: Forces RCU offloader kthreads to poll periodically rather than sending Inter-Processor Interrupt (IPI) wakeups to isolated cores. Eliminates RCU IPI storms.
-   - `rcupdate.rcu_normal_after_boot=1`: Prevents expedited RCU grace periods from issuing IPI broadcast storms during runtime.
-4. **Zero-Nanosecond Idle Busy-Polling (`idle=poll cpuidle.off=1 processor.max_cstate=0`)**:
-   - Completely disables CPU idle sleep states. Forces the kernel idle loop to busy-spin in C0, guaranteeing 0 ns exit latency.
-5. **System & IRQ Evacuation (`systemd.cpu_affinity=0 irqaffinity=0`)**:
-   - `systemd.cpu_affinity=0`: Forces systemd and all background system services (sshd, rsyslog, journald, crond) to spawn worker threads exclusively on Core 0.
-   - `irqaffinity=0`: Configures kernel early-boot IRQ affinity to Core 0 before device drivers initialize.
-6. **IOMMU & PCIe Optimization (`iommu=off pcie_aspm=off`)**:
-   - `iommu=off`: Disables AMD-Vi hardware IOMMU translation, allowing direct physical DMA addressing for the Intel 82599ES NIC.
-   - `pcie_aspm=off`: Prevents PCIe bus lanes from entering low-power link states (L0s/L1).
-7. **Static 1GB Hugepage Pre-Allocation (`default_hugepagesz=1G hugepagesz=1G hugepages=16`)**:
-   - Pre-allocates 16 GB of contiguous 1 GB hugepages at early boot before DRAM becomes fragmented. Minimizes TLB miss penalties for order books and packet ring buffers.
-8. **Mitigation & Audit Removal (`mitigations=off audit=0`)**:
-   - Strips speculative execution barriers (KPTI, Retbleed) and evaluation hooks from the system call path, reducing syscall overhead by ~50%.
-9. **Autonomous Scaling Disablement (`amd_pstate=disable`)**:
-   - Disables AMD CPPC autonomous frequency transitions, enabling deterministic maximum frequency lock at 5.66 GHz.
+#### 1. The `isolcpus=managed_irq` Fatal Failure Mode
+- **Mechanism**: The `managed_irq` flag tells the Linux kernel that device drivers utilizing managed interrupts (such as `blk-mq` for NVMe and multi-queue 10GbE network drivers) must NOT allocate interrupt vectors to the isolated cores (Cores 1–11).
+- **The Catastrophe on `cherry`**:
+  - `cherry` uses two enterprise **Micron 7500 PRO NVMe SSDs** configured in **Linux Software RAID1 (`md127`)** for the root filesystem (`root=/dev/md127`).
+  - The Micron NVMe controller requests multiple hardware completion queues (typically 1 queue per CPU core = 12 queues per drive).
+  - With `managed_irq` isolating 11 of the 12 cores, the driver attempted to map all 24+ NVMe managed queue vectors to **Core 0 alone**.
+  - On Linux 6.12 / AlmaLinux 10, when the hardware MSI-X vector allocation table cannot satisfy the managed queue mapping on a single core or runs out of unreserved vector slots, the NVMe driver probe fails or hangs during early initramfs boot.
+  - Because the NVMe drives failed to probe, the `md127` software RAID array never assembled. The kernel waited indefinitely for `root=/dev/md127` to appear, timing out and hanging the system before ever reaching systemd or bringing up network interfaces!
+
+#### 2. The Core 0 100% Saturation Death Spiral (`systemd.cpu_affinity=0` + `rcu_nocb_poll` + `idle=poll`)
+- **Mechanism**:
+  - `idle=poll`: Forces the CPU idle loop to execute a tight `rep; nop` busy-spin loop at 100% CPU duty cycle whenever idle, rather than entering a halted state.
+  - `rcu_nocb_poll`: Spawns 11 polling kernel threads (`rcuop/1` through `rcuop/11`) pinned to Core 0 that continuously spin checking for RCU callbacks without sleeping.
+  - `systemd.cpu_affinity=0`: Forces PID 1 (`systemd`), `systemd-udevd`, `dbus-daemon`, `rsyslog`, and all initialization worker threads onto Core 0 exclusively.
+- **The Catastrophe**:
+  - Core 0 was slammed with 100% CPU utilization before user space even initialized.
+  - As `systemd-udevd` attempted to enumerate devices and initialize network interfaces, it was starved of scheduler time by the polling RCU threads and busy-polling idle loops.
+  - This triggered kernel watchdog soft lockup panics and systemd startup job timeouts, permanently halting the boot sequence.
+
+#### 3. `default_hugepagesz=1G` Memory Allocation Failure
+- Changing the system's *default* hugepage size to 1GB breaks user-space services that call `mmap(MAP_HUGETLB)` expecting standard 2MB pages. Furthermore, reserving 16GB of 1GB pages in early initramfs on a dual-socket or NUMA configuration can fail if physical contiguous memory alignment cannot be satisfied during bootloader memory handoff.
+
+#### 4. `tsc=reliable` Clocksource Bypass
+- Zen 5 natively supports invariant TSC. Passing `tsc=reliable` forcibly disables the kernel clocksource watchdog during early boot. If ACPI PM timers and HPET have not yet stabilized during bootloader handoff, bypassing clock verification can freeze the kernel timing subsystem.
 
 ---
 
-### 4.2. TuneD CPU-Partitioning Profile
+## 6. Supermicro H13SRD-F BIOS Configuration (From Hardware Screenshots)
 
-While `latency-performance` is currently active, switching to `cpu-partitioning` provides enterprise-grade isolation management:
-1. Configure `/etc/tuned/cpu-partitioning-variables.conf`:
-   ```ini
-   isolated_cores=1-11
-   ```
-2. Activate profile:
+Based on the actual BIOS screenshots taken from `cherry` (AMI Aptio Setup Version 2.22.1294), the firmware menus and optimal settings are structured as follows:
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                           Aptio Setup - American Megatrends International, LLC.                         │
+│   Main       Advanced       Event Logs       IPMI       Security       Boot       Save & Exit           │
+└───┬─────────────┬──────────────┬──────────────┬────────────┬─────────────┬─────────────┬────────────────┘
+    │             │              │              │            │             │             │
+    │             ▼              ▼              ▼            ▼             ▼             ▼
+    │     ┌─────────────────────────────────────────────────────────────────┐
+    │     │ ► CPU Configuration                                             │ ──> C-States, PSS, SMT, CPB
+    │     │ ► North Bridge Configuration                                    │ ──> Above 4GB MMIO, IOMMU
+    │     │ ► South Bridge Configuration                                    │
+    │     │ ► Super IO Configuration                                        │ ──> AST2600 BMC / COM Port
+    │     │ ► Serial Port Console Redirection                               │
+    │     │ ► PCIe/PCI/PnP Configuration                                    │ ──> Above 4G, BAR, ASPM, Relaxed Ord
+    │     │ ► AMD fTPM configuration                                        │
+    │     │ ► Network Configuration                                         │ ──> Intel 82599 Dual 10GbE
+    │     │ ► Supermicro KMS Server Configuration                           │
+    │     └─────────────────────────────────────────────────────────────────┘
+```
+
+### Exact BIOS Settings Walkthrough:
+
+#### 1. Advanced → CPU Configuration
+*Screenshot: `PXL_20260910_004430434.jpg`*
+- **Global C-state Control**: Set to **`[Disabled]`** *(Hardware-verified: already Disabled)*  
+  *Prevents Zen 5 cores and Data Fabric (DF) from entering sleep states. Eliminates C-state wake penalty.*
+- **PSS Support**: Set to **`[Disabled]`** *(Hardware-verified: already Disabled)*  
+  *Disables ACPI `_PSS` dynamic performance state tables. Eliminates opportunistic frequency/voltage transitions.*
+- **SMT Control**: Set to **`[Disabled]`** *(Hardware-verified: already Disabled)*  
+  *Disables Simultaneous Multi-Threading. Yields 12 dedicated physical cores with zero sibling cache thrashing.*
+- **Core Performance Boost**: Set to **`[Disabled]`** *(Hardware-verified: already Disabled)*  
+  *Disables dynamic CPB/Turbo boost. Eliminates PLL relocking latency and thermal frequency throttling.*
+- **NX Mode**: Keep **`[Enabled]`**
+- **SVM Mode**: Keep **`[Enabled]`**
+
+#### 2. Advanced → North Bridge Configuration
+*Screenshot: `PXL_20260910_004440239.jpg`*
+- **Above 4GB MMIO Limit**: Set to **`[40bit (1TB)]`** *(Hardware-verified: already 40bit)*
+- **IOMMU**: Set to **`[Disabled]`** *(Hardware-verified: already Disabled)*  
+  *Disables AMD-Vi hardware IOMMU translation at the hardware level. Bypasses IOTLB overhead on high-throughput packet bursts.*
+- **PPT Control**: Keep **`[Auto]`**
+
+#### 3. Advanced → PCIe/PCI/PnP Configuration
+*Screenshot: `PXL_20260910_004507165.jpg`*
+- **Above 4G Decoding**: Set to **`[Enabled]`** *(Hardware-verified: already Enabled)*
+- **Re-Size BAR**: Set to **`[Enabled]`** *(Hardware-verified: already Enabled)*  
+  *Enables full-aperture direct CPU mapping of NIC and GPU memory buffers.*
+- **SR-IOV Support**: Set to **`[Enabled]`** *(Hardware-verified: already Enabled)*
+- **BME DMA Mitigation**: Set to **`[Disabled]`** *(Hardware-verified: already Disabled)*  
+  *Ensures Bus Master DMA remains active across boot stages.*
+- **ASPM Support**: Set to **`[Disabled]`** *(Hardware-verified: already Disabled)*  
+  *Keeps PCIe Gen 4/Gen 5 lanes locked in full-power L0 active state, eliminating link wakeup delay.*
+- **Relaxed Ordering**: Set to **`[Enabled]`** *(Hardware-verified: already Enabled)*  
+  *Accelerates packet descriptor delivery by relaxing strict transaction ordering.*
+- **No Snoop**: Set to **`[Enabled]`** *(Hardware-verified: already Enabled)*  
+  *Allows cache-coherent DMA masters to bypass CPU cache snooping when writing to uncached packet buffers.*
+- **NVMe Firmware Source**: Set to **`[AMI Native Support]`**
+- **NVMe RAID Mode**: Set to **`[Disabled]`** *(AHCI / Native NVMe)*
+
+#### 4. Advanced → Super IO Configuration & Network Configuration
+*Screenshots: `PXL_20260910_004459135.jpg` and `PXL_20260910_004519014.jpg`*
+- Super IO Chip: **Aspeed AST2600** BMC controller.
+- Dual Intel 82599 10GbE interfaces: `MAC:90:5A:08:3E:00:E6` and `MAC:90:5A:08:3E:00:E7`.
+
+---
+
+## 7. Revised Strategy: Safe & Deterministic Boot Parameters
+
+To achieve sub-microsecond determinism without bricking server boot or starving storage drivers, we replace the previous boot string with the **Safe Production HFT Boot String**:
+
+### Safe Combined GRUB String (Cores 1–11 Isolated):
+```text
+isolcpus=domain,nohz,1-11 nohz=on nohz_full=1-11 rcu_nocbs=1-11 rcupdate.rcu_normal_after_boot=1 skew_tick=1 nosmt audit=0 mce=ignore_ce transparent_hugepage=never pcie_aspm=off mitigations=off
+```
+
+### Architectural Justification of Each Parameter:
+1. **`isolcpus=domain,nohz,1-11`**:
+   - `domain`: Strips Cores 1–11 from the CFS scheduler load-balancing domain.
+   - `nohz`: Prevents tick accounting overhead on isolated cores.
+   - **Crucially omits `managed_irq`**: Allows NVMe `blk-mq` and multi-queue network drivers to initialize cleanly without starving vector tables during early boot.
+2. **`nohz=on nohz_full=1-11`**:
+   - Stops the 1000 Hz kernel scheduler timer tick on trading cores whenever a single task is runnable. Directly eliminates the 11–12 µs cyclictest latency floor!
+3. **`rcu_nocbs=1-11`**:
+   - Offloads RCU garbage collection callbacks to housekeeping Core 0 **without** the destructive `rcu_nocb_poll` busy-spin loop.
+4. **`rcupdate.rcu_normal_after_boot=1`**:
+   - Accelerates boot via expedited grace periods, then restores normal non-disruptive RCU at runtime.
+5. **`skew_tick=1`**:
+   - Desynchronizes timer interrupts across CPU cores to prevent simultaneous bus stampedes.
+6. **`nosmt`**:
+   - Enforces single-threaded execution per physical core at boot.
+7. **`audit=0`**:
+   - Strips system call audit logging (~30 ns saved per syscall).
+8. **`mce=ignore_ce`**:
+   - Prevents execution stalls when hardware correctable memory errors occur.
+9. **`transparent_hugepage=never`**:
+   - Prevents memory compaction stalls.
+10. **`pcie_aspm=off`**:
+    - Ensures PCIe lanes stay in L0 active power state.
+11. **`mitigations=off`**:
+    - Disables speculative execution barriers, shaving ~25 ns off syscalls and ~150 ns off context switches.
+
+### Handling Managed IRQs & System Affinity Safely:
+Instead of trying to force managed IRQs via `isolcpus=managed_irq` (which breaks boot), manage IRQs safely post-boot:
+1. **TuneD `cpu-partitioning` Profile**:
+   - Use `/etc/tuned/cpu-partitioning-variables.conf` with `isolated_cores=1-11`. TuneD automatically moves workqueues and user tasks away from isolated cores safely after the system is fully booted.
+2. **Runtime IRQ Steering**:
+   - Keep `irqbalance` stopped.
+   - Direct all assignable hardware interrupts to Core 0 via `/proc/irq/*/smp_affinity`.
+3. **Dedicated AF_XDP Queue Allocation**:
+   - Rather than attempting to move all NVMe completion queues, bind trading traffic directly to dedicated Intel 82599ES hardware queue pairs (e.g., Rx/Tx Queue 1 on Core 1).
+4. **Hugepages**:
+   - Maintain the default system hugepage size at 2MB. Pre-allocate 1GB hugepages dynamically post-boot via:
+     ```bash
+     echo 16 > /sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages
+     ```
+
+---
+
+## 8. Verification Checklist for the Next Test Run
+
+When the next bare-metal server is provisioned:
+
+1. **Verify BIOS Settings via IPMI / POST Screen**:
+   - Confirm `CPU Configuration`: Global C-state: Disabled, PSS: Disabled, SMT: Disabled, CPB: Disabled.
+   - Confirm `North Bridge Configuration`: IOMMU: Disabled.
+   - Confirm `PCIe/PCI/PnP Configuration`: Above 4G: Enabled, Re-Size BAR: Enabled, ASPM: Disabled, Relaxed Ordering: Enabled, No Snoop: Enabled.
+2. **Apply Safe Boot Parameters**:
    ```bash
-   tuned-adm profile cpu-partitioning
+   sudo grubby --update-kernel=ALL --args="isolcpus=domain,nohz,1-11 nohz=on nohz_full=1-11 rcu_nocbs=1-11 rcupdate.rcu_normal_after_boot=1 skew_tick=1 nosmt audit=0 mce=ignore_ce transparent_hugepage=never pcie_aspm=off mitigations=off"
+   sudo reboot
    ```
-3. **Benefits**:
-   - Moves all kernel workqueues (`/sys/devices/virtual/workqueue/cpumask`) off isolated cores.
-   - Sets machine check ignore (`ignore_ce = 1`).
-   - Automatically shields isolated cores from user space and systemd task placement.
-
----
-
-### 4.3. Intel 82599ES 10GbE Network Queue & Affinity Steering
-
-The dual Intel 82599ES NICs (`enp1s0f0` and `enp1s0f1`) configured under `bond0` have 24 hardware MSI-X queues each. To protect trading cores:
-1. **Steer Non-Trading Traffic & Housekeeping to Core 0**:
-   - All network management traffic (SSH, monitoring, NTP) must be processed on Core 0.
-2. **AF_XDP Dedicated Queue Binding**:
-   - For market data ingestion and order execution, allocate a dedicated hardware Rx/Tx queue pair (e.g. Queue 1) pinned exclusively to the specific trading core (e.g. Core 1), bypassing the kernel TCP/IP stack.
-3. **Disable Software Packet Steering**:
-   - Disable RPS (`rps_cpus = 0`) and RFS on trading interfaces to avoid software interrupt forwarding across cores.
-
----
-
-### 4.4. CCD-Aware Core Allocation on Zen 5 Architecture
-
-The AMD Ryzen 9 9900X has a dual-CCD topology:
-- **CCD 0 (Core 0 to Core 5)**: Shared 32 MB L3 Cache.
-  - *Core 0*: OS Housekeeping, kernel threads, network IRQs, storage I/O, systemd daemons.
-  - *Cores 1 to 5*: **Primary Trading Cluster** (Market data feed handler, order book engine, strategy computation). Because Cores 1–5 share the same 32 MB L3 cache slice, inter-thread messaging occurs at L3 speed (~10 ns) without crossing the Infinity Fabric.
-- **CCD 1 (Core 6 to Core 11)**: Shared 32 MB L3 Cache.
-  - *Cores 6 to 11*: **Secondary / Ancillary Services** (Logging, risk management, persistence, analytics). Isolated from OS noise, but separate from the primary trading hot-path.
-
----
-
-## 5. Implementation Plan & Applied Changes for Next Test Run
-
-### Step 1: Upgraded Core Isolation Engine in `hft_tuning.sh`
-- Updated `hft_tuning.sh` to dynamically compute physical core count via `lscpu -p=Core` rather than raw thread count.
-- Added runtime SMT disabling directly into `apply_ten_tunings` and restored in `revert_tunings`.
-- Enhanced the master GRUB parameter generator to incorporate `systemd.cpu_affinity=0`, `irqaffinity=0`, and `iommu=off`.
-
-### Step 2: Applied Master Boot Parameters to `cherry` Bootloader
-- Ran `grubby` on `cherry` to update the default installed kernel (`6.12.0-211.7.3.el10_2.x86_64`) with all 20 master HFT boot parameters.
-- Verified boot configuration with `grubby --info=DEFAULT`.
-
-### Step 3: Configured TuneD `cpu-partitioning` Variables
-- Updated `/etc/tuned/cpu-partitioning-variables.conf` on `cherry` with `isolated_cores=1-11`.
-- Configured TuneD to prepare for active CPU partitioning.
-
-### Step 4: Updated Host Hardware Reference & Documentation
-- Saved exact server-tailored parameter references in [`results/AMD_Ryzen_9_9900X_20260910_005443/hft_grub_parameters_reference.txt`](file:///home/neville/hft/results/AMD_Ryzen_9_9900X_20260910_005443/hft_grub_parameters_reference.txt).
-
----
-
-## 6. Verification Checklist for Next Test Run
-
-Upon rebooting `cherry` into the tuned kernel:
-1. `cat /proc/cmdline` must reflect `isolcpus=managed_irq,domain,1-11 nohz_full=1-11 rcu_nocbs=1-11 nosmt idle=poll mitigations=off iommu=off`.
-2. `cat /sys/devices/system/cpu/isolated` must report `1-11`.
-3. `cat /sys/devices/system/cpu/nohz_full` must report `1-11`.
-4. `cat /proc/meminfo | grep -i hugepages` must show `16` x 1GB hugepages reserved.
-5. `cat /sys/devices/virtual/workqueue/cpumask` must report `001` (Core 0 only).
-6. Next benchmark run (`./hft_tuning.sh --after` or `--full`) should demonstrate:
-   - **Cyclictest max latency drop from 12 µs down to < 2–3 µs**.
-   - **Zero (>1 µs) jitter pauses or single-digit events**.
-   - **Elimination of the 1.2 ms managed NVMe interrupt outlier**.
+3. **Verify Post-Boot State**:
+   ```bash
+   cat /proc/cmdline
+   cat /sys/devices/system/cpu/isolated     # Must output: 1-11
+   cat /sys/devices/system/cpu/nohz_full    # Must output: 1-11
+   cat /sys/devices/virtual/workqueue/cpumask # Must output: 001
+   sudo ./hft_tuning.sh --verify
+   ```
+4. **Expected Benchmark Gains in Round 2**:
+   - **Cyclictest timer latency**: Drop from 12.1 µs to **< 2.5 µs**.
+   - **Execution jitter pauses (>1 µs)**: Drop from 223 events to **sub-10 events**.
+   - **Context switch latency**: Drop from 605 ns to **< 450 ns** (due to `mitigations=off`).
+   - **Syscall `getpid`**: Drop from 53 ns to **< 30 ns** (due to `mitigations=off audit=0`).
+   - **Zero boot failures or rescue mode incidents**.

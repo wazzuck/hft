@@ -145,212 +145,202 @@ Due to the modular dual-CCD architecture (2 Core Complex Dies interconnected via
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1. Accessing Low Latency High Frequency Trading Platform UEFI / BIOS Setup
-1. Reboot the server.
-2. During the early Power-On Self-Test (POST) screen, repeatedly press `<DEL>` or `<F2>` until the **Aptio Setup Utility (AMI BIOS)** launches.
-3. If running in graphical/EZ mode, press `<F7>` to switch to **Advanced Mode** (most IPMI/serial console Aptio installations default directly to classic text-mode Advanced Mode).
+### 1. Accessing Supermicro H13SRD-F UEFI / AMI Aptio Setup
+1. Reboot the server or connect via IPMI KVM / Serial-over-LAN (SOL).
+2. During the early Power-On Self-Test (POST) screen, press `<DEL>` or `<F2>` to launch the **American Megatrends (AMI) Aptio Setup Utility (Version 2.22.1294)**.
+3. Supermicro enterprise motherboards default directly to text-mode Advanced Setup.
 
 ---
 
-### 2. Aptio Setup: AMD Ryzen vs. Enterprise EPYC BIOS Comparison
+### 2. Supermicro H13SRD-F Aptio Setup Navigation Tree & Menu Structure
 
-If you have previously configured enterprise AMD EPYC servers, the **AMI Aptio Setup** on an AMD Ryzen platform will appear significantly simpler and less cluttered. Here is why:
-
-| Architecture Domain | AMD EPYC Aptio Setup (Enterprise Multi-Node) | AMD Ryzen Aptio Setup (AM5 / Single-Socket HFT) | Adjustment for Ryzen HFT |
-| :--- | :--- | :--- | :--- |
-| **NUMA Topology** | Configurable: `NPS0`, `NPS1`, `NPS2`, `NPS4` across 4–12 memory channels | Fixed: 1 NUMA Node / UMA across 2 DDR5 channels | **Omitted**: Do not look for `NPS` or `SRAT` options. |
-| **Sub-NUMA Clustering** | `SNC` / `L3 Cache as NUMA` options | Single unified L3 per 8-core CCD | **Omitted**: Unnecessary on Ryzen. |
-| **Clock Determinism** | Determinism Slider (`Performance` vs `Power`) | Core Performance Boost (CPB) toggle or manual clock multiplier | **Keep Disabled**: Turn CPB/PBO off or lock all-core multiplier. |
-| **Socket Interconnect** | Multi-socket xGMI / UPI link frequency & width | Single AM5 socket | **Omitted**: No inter-socket fabric to tune. |
-| **Idle Power Phases** | C-states / Determinism | `Power Supply Idle Control` | **Set to `Typical Current Idle`**: Prevents VRM voltage drops during trading lulls. |
-| **Core Isolation** | `SMT Control` (Disable) | `SMT Control` (Disable) | **Identical**: Must disable SMT for 1 thread per physical core. |
-| **PCIe Subsystem** | 128 lanes, bifurcation per slot/MCIO | 24–28 lanes, direct CPU PCIe Gen 5 | **Identical**: Disable PCIe ASPM, enable Above 4G & Re-Size BAR. |
-| **DMA Virtualization** | IOMMU (Disable for bare metal) | IOMMU (Disable for bare metal) | **Identical**: Disable to bypass IOTLB overhead. |
-
----
-
-### 3. AMI Aptio Setup (Aptio V) Navigation Tree & Controls
-
-On modern AM5 motherboards (e.g. ASRock Rack, Supermicro, ASUS, MSI) running AMI Aptio Setup, use the standard keyboard controls to navigate:
-
-#### Universal Aptio Keyboard Controls
-| Key(s) | Action in Aptio Setup |
-| :--- | :--- |
-| `[←]` / `[→]` | **Select Screen**: Switch horizontally between top-level tabs (`Main`, `Advanced`, `Chipset/OC`, `Boot`, etc.). |
-| `[↑]` / `[↓]` | **Select Item**: Move the selection cursor up and down through menu lines. |
-| `[Enter]` | **Select / Open**: Enters a sub-menu (denoted by `►` or `>`), or opens a popup selection list for an option. |
-| `[+]` / `[-]` or `[PgUp]` / `[PgDn]` | **Change Option**: Cycles through available values for the highlighted setting without opening a popup dialog. |
-| `[Esc]` | **Exit / Back**: Steps backward to the parent menu or exits the current dialog. |
-| `[F1]` | **General Help**: Displays basic keyboard control help. |
-| `[F7]` | **Advanced / EZ Mode Toggle**: On consumer boards (ASUS/MSI/ASRock), toggles between graphical EZ Mode and classic Advanced text mode. |
-| `[F9]` | **Optimized Defaults**: Loads factory optimized default settings. |
-| `[F10]` | **Save & Exit**: Opens the confirmation prompt to save all modifications and reboot. |
+The Supermicro H13SRD-F organizes AMD Ryzen AM5 server options cleanly into dedicated sub-menus under the top-level **`Advanced`** tab:
 
 ```text
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    Aptio Setup - American Megatrends                        │
-│   Main     Advanced     Chipset / OC     Security     Boot     Save & Exit  │
-└──────┬─────────┬──────────────┬──────────────┬──────────┬───────────┬───────┘
-       │         │              │              │          │           │
-       │         ▼              ▼              │          │           │
-       │  ┌──────────────┐ ┌──────────────┐    │          │           │
-       │  │ AMD CBS      │ │ PCIe / OC    │    │          │           │
-       │  └──────┬───────┘ └──────┬───────┘    │          │           │
-       │         │                │            │          │           │
-       ▼         ▼                ▼            ▼          ▼           ▼
-  [Platform]  [Core Clocks]  [Fabric & Bus] [Passwords] [Boot Order] [Save & Reset]
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                           Aptio Setup - American Megatrends International, LLC.                         │
+│   Main       Advanced       Event Logs       IPMI       Security       Boot       Save & Exit           │
+└───┬─────────────┬──────────────┬──────────────┬────────────┬─────────────┬─────────────┬────────────────┘
+    │             │              │              │            │             │             │
+    │             ▼              ▼              ▼            ▼             ▼             ▼
+    │     ┌─────────────────────────────────────────────────────────────────┐
+    │     │ ► CPU Configuration                                             │ ──> C-States, PSS, SMT, CPB
+    │     │ ► North Bridge Configuration                                    │ ──> Above 4GB MMIO, IOMMU
+    │     │ ► South Bridge Configuration                                    │
+    │     │ ► Super IO Configuration                                        │ ──> AST2600 BMC / COM Port
+    │     │ ► Serial Port Console Redirection                               │
+    │     │ ► PCIe/PCI/PnP Configuration                                    │ ──> Above 4G, BAR, ASPM, Relaxed Ord
+    │     │ ► AMD fTPM configuration                                        │
+    │     │ ► Network Configuration                                         │ ──> Intel 82599 Dual 10GbE
+    │     │ ► Supermicro KMS Server Configuration                           │
+    │     └─────────────────────────────────────────────────────────────────┘
 ```
 
+#### Universal Keyboard Controls in Aptio Setup
+| Key(s) | Action |
+| :--- | :--- |
+| `[←]` / `[→]` | **Select Screen**: Switch between top-level tabs (`Main`, `Advanced`, `Event Logs`, `IPMI`, etc.). |
+| `[↑]` / `[↓]` | **Select Item**: Move cursor up/down through settings and sub-menus. |
+| `[Enter]` | **Select / Open**: Enter sub-menu (denoted by `►`) or open selection popup dialog. |
+| `[+]` / `[-]` | **Change Value**: Cycle values directly for the highlighted setting. |
+| `[Esc]` | **Exit / Back**: Return to parent menu or close popup dialog. |
+| `[F1]` | **General Help**: Display help dialog. |
+| `[F4]` | **Save & Exit**: Save changes and reboot system. |
+
 ---
 
-### 4. Step-by-Step Keystroke Walkthrough for Each Low-Latency Setting
+### 3. Step-by-Step Keystroke Walkthrough for Supermicro H13SRD-F
 
-Follow these exact keystroke sequences to navigate directly to each critical HFT configuration inside AMI Aptio Setup:
+Follow these exact keystroke sequences mapped directly to the Supermicro H13SRD-F firmware menus:
 
-#### 1. Disable Simultaneous Multi-Threading (SMT)
+#### Menu 1: Advanced → CPU Configuration (C-States, Frequency Determinism, SMT)
+*Navigates to the core processor architecture controls for the AMD Ryzen 9 9900X (12-core, Zen 5).*
+
 1. At the top navigation bar, press `[→]` to highlight **`Advanced`**.
-2. Press `[↓]` until **`CPU Configuration`** (or `AMD CBS` → `CPU Common Options`) is highlighted, then press `[Enter]`.
-3. Press `[↓]` to navigate to **`SMT Control`** (or `SMT Mode`).
-4. Press `[Enter]`. A small selection dialog will pop up with options (`Auto`, `Enable`, `Disable`).
-5. Press `[↓]` to highlight **`Disable`** (or `Disabled`), then press `[Enter]`.
-6. Press `[Esc]` to return to the **`Advanced`** menu screen.
+2. Press `[↓]` to select **`CPU Configuration`**, then press `[Enter]`.
+3. Configure the following settings:
+   - **Global C-state Control** → Select **`[Disabled]`**  
+     *Prevents Zen 5 cores and Data Fabric (DF) from entering low-power idle states (C1/C2). Cores remain permanently active in C0 with 0ns wake latency.*
+   - **PSS Support** → Select **`[Disabled]`**  
+     *Disables ACPI `_PSS` dynamic performance state tables. Eliminates opportunistic frequency/voltage scaling, enforcing deterministic execution frequency.*
+   - **SMT Control** → Select **`[Disabled]`**  
+     *Disables Simultaneous Multi-Threading (Hyper-Threading). Eliminates L1/L2 cache and execution pipeline thrashing from sibling threads. Yields 12 dedicated physical cores.*
+   - **Core Performance Boost** → Select **`[Disabled]`**  
+     *Disables dynamic Core Performance Boost (CPB/Turbo). Eliminates phase-locked loop (PLL) relocking latency and thermal frequency throttling across cores.*
+   - **NX Mode** → Keep **`[Enabled]`** *(No-Execute memory protection)*
+   - **SVM Mode** → Keep **`[Enabled]`** *(Secure Virtual Machine)*
+4. Press `[Esc]` to return to the **`Advanced`** menu.
 
-#### 2. Disable Sleep States, Clock Jitter & Stabilize VRM Voltages
-1. From the **`Advanced`** menu, press `[↓]` to highlight **`AMD CBS`**, then press `[Enter]`.
-2. Press `[↓]` to highlight **`CPU Common Options`**, then press `[Enter]`.
-3. In this sub-menu:
-   - **Core Performance Boost**: Press `[↓]` to highlight **`Core Performance Boost`** → press `[Enter]` → use `[↓]` to select **`Disabled`** → press `[Enter]`.
-   - **Global C-state Control**: Press `[↓]` to highlight **`Global C-state Control`** → press `[Enter]` → use `[↓]` to select **`Disabled`** → press `[Enter]`.
-   - **Power Supply Idle Control**: Press `[↓]` to highlight **`Power Supply Idle Control`** → press `[Enter]` → use `[↓]` to select **`Typical Current Idle`** → press `[Enter]`.
-   - **Streaming Stores Control**: Press `[↓]` to highlight **`Streaming Stores Control`** → press `[Enter]` → use `[↓]` to select **`Enabled`** → press `[Enter]`.
-4. Press `[Esc]` to back out to the **`AMD CBS`** menu.
+#### Menu 2: Advanced → North Bridge Configuration (Memory & IOMMU)
+*Configures DDR5 memory mapping and DMA virtualization translation.*
 
-#### 3. Disable IOMMU (Strip Out DMA Translation Latency)
-1. While still inside the **`AMD CBS`** menu, press `[↓]` to highlight **`NBIO Common Options`**, then press `[Enter]`.
-2. Press `[↓]` to highlight **`IOMMU`**, then press `[Enter]`.
-3. Use `[↓]` to select **`Disabled`**, then press `[Enter]`.
-4. Press `[Esc]` twice to back out to the top-level **`Advanced`** menu.
-
-#### 4. Configure PCIe Link States & 64-Bit Memory Mapping
-1. From the **`Advanced`** menu, press `[↓]` to highlight **`PCI Subsystem Settings`** (or `PCIe / PCI Configuration`), then press `[Enter]`.
-2. In this sub-menu:
-   - **Above 4G Decoding**: Press `[↓]` to highlight **`Above 4G Decoding`** → press `[Enter]` → select **`Enabled`** → press `[Enter]`.
-   - **Re-Size BAR Support**: Press `[↓]` to highlight **`Re-Size BAR Support`** → press `[Enter]` → select **`Enabled`** (or `Auto`) → press `[Enter]`.
-   - **PCIe ASPM Support**: Press `[↓]` to highlight **`PCIe ASPM Support`** → press `[Enter]` → select **`Disabled`** → press `[Enter]`.
+1. From the **`Advanced`** menu, press `[↓]` to select **`North Bridge Configuration`**, then press `[Enter]`.
+2. Configure the following settings:
+   - **Above 4GB MMIO Limit** → Select **`[40bit (1TB)]`** (or default matching physical memory)  
+     *Extends memory-mapped I/O decoding range above 4GB.*
+   - **IOMMU** → Select **`[Disabled]`**  
+     *Disables AMD-Vi hardware IOMMU translation at the hardware level. Eliminates IOTLB page-table translation overhead and DMA latency spikes on high-throughput NIC packet bursts.*
+   - **PPT Control** → Keep **`[Auto]`** *(Package Power Tracking)*
 3. Press `[Esc]` to return to the **`Advanced`** menu.
 
-#### 5. Lock Infinity Fabric & Memory Clocks to 1:1 (Zero-Gear Penalty)
-1. Press `[→]` to navigate to the **`OC Tweaker`** / **`Ai Tweaker`** / **`Extreme Tweaker`** top tab (on server boards without an OC tab, go to `Advanced` → `AMD CBS` → `DF Common Options`).
-2. Highlight **`FCLK Frequency`** → press `[Enter]` → select **`2000 MHz`** (or match memory clock MCLK) → press `[Enter]`.
-3. Highlight **`UCLK DIV1 MODE`** → press `[Enter]` → select **`UCLK=MEMCLK`** → press `[Enter]`.
+#### Menu 3: Advanced → PCIe/PCI/PnP Configuration (Bus States & BAR)
+*Optimizes the PCIe interconnect for low-latency network cards and NVMe storage.*
 
-#### 6. Save Configuration & Reboot
-1. Press the **`[F10]`** hotkey from any screen (or press `[→]` until the **`Save & Exit`** tab is highlighted, then press `[Enter]` on **`Save Changes and Reset`**).
-2. A confirmation prompt will appear:
-   ```text
-   Save configuration and reset?
-             [Yes]       [No]
-   ```
-3. Ensure **`[Yes]`** is selected and press **`[Enter]`**. The server will reboot with all low-latency hardware parameters active.
+1. From the **`Advanced`** menu, press `[↓]` to select **`PCIe/PCI/PnP Configuration`**, then press `[Enter]`.
+2. Under **PCI Devices Common Settings**, configure:
+   - **Above 4G Decoding** → Select **`[Enabled]`**  
+     *Enables 64-bit memory space decoding for PCIe devices.*
+   - **Re-Size BAR** → Select **`[Enabled]`**  
+     *Enables PCIe Resizable Base Address Registers (Re-Size BAR), allowing the CPU direct full-aperture access to NIC and GPU memory buffers.*
+   - **SR-IOV Support** → Select **`[Enabled]`**  
+     *Enables Single Root I/O Virtualization hardware support.*
+   - **BME DMA Mitigation** → Select **`[Disabled]`**  
+     *Prevents firmware from disabling Bus Master Enable attributes after SMM lock, avoiding unexpected DMA stalls.*
+   - **ASPM Support** → Select **`[Disabled]`**  
+     *Disables Active State Power Management. Keeps PCIe Gen 4/Gen 5 lanes locked in full-power L0 active state, eliminating link wakeup delay.*
+   - **Relaxed Ordering** → Select **`[Enabled]`**  
+     *Allows PCIe packet transactions that do not depend on each other to bypass stalls, accelerating descriptor delivery.*
+   - **No Snoop** → Select **`[Enabled]`**  
+     *Allows cache-coherent DMA masters to bypass CPU cache snooping when writing to uncached packet buffers.*
+   - **NVMe Firmware Source** → Keep **`[AMI Native Support]`**
+   - **NVMe RAID Mode** → Keep **`[Disabled]`** *(AHCI / Native NVMe)*
+3. Press `[Esc]` to return to the **`Advanced`** menu.
 
----
+#### Menu 4: Advanced → Network Configuration (Intel 82599 Dual 10GbE)
+*Displays physical MAC addresses and PXE boot configurations for onboard dual 10GbE SFP+ controllers (`MAC:90:5A:08:3E:00:E6` and `MAC:90:5A:08:3E:00:E7`). Verify network interfaces are detected and healthy.*
 
-### 5. Aptio Low-Latency Settings Summary Reference Table
-
-#### A. CPU Core Isolation & Multithreading (`Advanced` → `CPU Configuration`)
-| Aptio Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
-| :--- | :--- | :--- | :--- |
-| `Advanced` → `CPU Configuration` | **SMT Control** | **Disable** | Disables Simultaneous Multi-Threading. SMT sibling threads compete for L1/L2 caches and execution ALUs. Disabling provides dedicated physical cores with zero noisy-neighbor stalls. |
-
-#### B. AMD CBS → CPU Common Options (Sleep States & Clocks)
-| Aptio Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
-| :--- | :--- | :--- | :--- |
-| `Advanced` → `AMD CBS` → `CPU Common Options` | **Core Performance Boost (CPB)** | **Disabled** | CPB boosts clocks opportunistically, but the dynamic voltage/frequency transitions cause phase-locked loop (PLL) relocking jitter. Disabling locks cores to a deterministic base frequency. |
-| `Advanced` → `AMD CBS` → `CPU Common Options` | **Global C-state Control** | **Disabled** | Hard-disables C1, C1E, and C2 sleep states in hardware. Zen cores never enter sleep modes, maintaining 100% C0 execution readiness. |
-| `Advanced` → `AMD CBS` → `CPU Common Options` | **Power Supply Idle Control** | **Typical Current Idle** | Prevents motherboard VRMs and CPU power planes from dropping down into low-current sleep states during market lulls. Eliminates power-rail wake-up latency when high-volume packet bursts hit the NIC. |
-| `Advanced` → `AMD CBS` → `CPU Common Options` | **Streaming Stores Control** | **Enabled** | Accelerates non-temporal store instructions to write directly to DRAM. |
-
-#### C. Extreme Tweaker / OC / Memory (`OC Tweaker` or `Advanced` → `AMD CBS` → `DF Common Options`)
-| Aptio Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
-| :--- | :--- | :--- | :--- |
-| `OC Tweaker` / `AMD CBS` | **FCLK Frequency** | **Match MCLK (e.g. 2000MHz)** | The Infinity Fabric Clock (FCLK) should match the Memory Clock (MCLK) tightly (typically 2000–2200MHz for Zen 5 DDR5-6000) to minimize inter-die transfer jitter. |
-| `OC Tweaker` / `AMD CBS` | **UCLK DIV1 MODE** | **UCLK=MEMCLK** | Forces the Unified Memory Controller Clock to run 1:1 with the memory clock, avoiding gear-down latency penalties. |
-
-#### D. PCIe Subsystem & IOMMU (`Advanced` → `PCI Subsystem Settings` & `AMD CBS` → `NBIO`)
-| Aptio Menu Path | Setting Name | Target Value | Low-Latency Architectural Rationale |
-| :--- | :--- | :--- | :--- |
-| `Advanced` → `PCI Subsystem Settings` | **PCIe ASPM Support** | **Disabled** | Keeps PCIe lanes locked in active L0 power state, eliminating link wakeup delays for NICs. |
-| `Advanced` → `AMD CBS` → `NBIO Common Options` | **IOMMU** | **Disabled** | Bare-metal HFT kernels bypass virtualization. Disabling strips away IOTLB page table lookups on packet DMA bursts. |
-| `Advanced` → `PCI Subsystem Settings` | **Above 4G Decoding** | **Enabled** | Permits 64-bit BAR memory mapping. |
-| `Advanced` → `PCI Subsystem Settings` | **Re-Size BAR Support** | **Enabled** | Allows mapping large multi-gigabyte NIC ring buffers directly into user-space. |
+#### Menu 5: Save & Exit
+1. Press `[F4]` (or press `[→]` to highlight the **`Save & Exit`** tab and select **`Save Changes and Reset`**).
+2. Select **`[Yes]`** to confirm and reboot.
 
 ---
 
-### 6. Post-Boot Linux Verification Commands for AMD Ryzen 9 9950X
-Verify your hardware configuration inside Linux:
+### 4. Supermicro H13SRD-F Low-Latency Settings Reference Matrix
+
+| Supermicro H13SRD-F Menu Path | Setting Name | Optimal Value | Low-Latency Architectural Rationale |
+| :--- | :--- | :--- | :--- |
+| `Advanced` → `CPU Configuration` | **Global C-state Control** | **`[Disabled]`** | Disables C1/C2 sleep states in hardware. Cores stay in C0 with 0ns wake penalty. |
+| `Advanced` → `CPU Configuration` | **PSS Support** | **`[Disabled]`** | Strips ACPI dynamic frequency/voltage scaling tables to prevent clock jitter. |
+| `Advanced` → `CPU Configuration` | **SMT Control** | **`[Disabled]`** | Disables Hyper-Threading. Prevents resource thrashing between sibling threads. |
+| `Advanced` → `CPU Configuration` | **Core Performance Boost** | **`[Disabled]`** | Locks processor to fixed base frequency; eliminates PLL relocking jitter. |
+| `Advanced` → `North Bridge Configuration` | **IOMMU** | **`[Disabled]`** | Bypasses AMD-Vi translation; direct physical DMA eliminates IOTLB stalls. |
+| `Advanced` → `North Bridge Configuration` | **Above 4GB MMIO Limit** | **`[40bit (1TB)]`** | Ensures 64-bit peripheral MMIO address space is correctly mapped. |
+| `Advanced` → `PCIe/PCI/PnP Configuration` | **Above 4G Decoding** | **`[Enabled]`** | Enables 64-bit BAR memory decoding for high-throughput PCIe controllers. |
+| `Advanced` → `PCIe/PCI/PnP Configuration` | **Re-Size BAR** | **`[Enabled]`** | Enables full-aperture direct CPU mapping of device memory. |
+| `Advanced` → `PCIe/PCI/PnP Configuration` | **ASPM Support** | **`[Disabled]`** | Keeps PCIe links locked in L0 active state; eliminates PCIe wake delays. |
+| `Advanced` → `PCIe/PCI/PnP Configuration` | **BME DMA Mitigation** | **`[Disabled]`** | Ensures Bus Master DMA remains active across boot stages. |
+| `Advanced` → `PCIe/PCI/PnP Configuration` | **Relaxed Ordering** | **`[Enabled]`** | Maximizes PCIe transaction throughput by relaxing strict sequential ordering. |
+| `Advanced` → `PCIe/PCI/PnP Configuration` | **No Snoop** | **`[Enabled]`** | Bypasses unnecessary CPU cache snooping for streaming DMA descriptors. |
+
+---
+
+### 5. Post-Boot Linux Verification Commands
+
+After booting into Linux, execute these commands to verify that BIOS settings applied successfully:
 
 ```bash
-# 1. Verify SMT is Disabled (16 physical cores, 1 thread per core)
+# 1. Verify SMT is Disabled (12 physical cores, 1 thread per core)
 lscpu | grep -E "Thread\(s\) per core|Core\(s\) per socket|Socket\(s\)"
-# Expected Output:
+# Expected:
 # Thread(s) per core:  1
-# Core(s) per socket:  16
+# Core(s) per socket:  12
 # Socket(s):           1
 
-# 2. Verify Core Performance Boost (CPB) is Disabled (returns 0)
-cat /sys/devices/system/cpu/cpufreq/boost
-# Output: 0
+# 2. Verify C-States are Disabled in Hardware (only C0 active)
+cat /sys/devices/system/cpu/cpu0/cpuidle/state*/name 2>/dev/null || echo "cpuidle: disabled"
 
-# 3. Verify C-States are Disabled (returns only C0 active)
-cat /sys/devices/system/cpu/cpu0/cpuidle/state*/name
+# 3. Verify PCIe ASPM is Disabled
+cat /sys/module/pcie_aspm/parameters/policy 2>/dev/null
 
-# 4. Verify PCIe ASPM is Disabled
-cat /sys/module/pcie_aspm/parameters/policy
-# Output: [performance]
-
-# 5. Verify IOMMU is Disabled
+# 4. Verify IOMMU is Disabled
 dmesg | grep -i -E "AMD-Vi|IOMMU" | grep -i "disabled"
 
-# 6. Execute the HFT 4-Tier Audit Suite
+# 5. Run the Automated HFT 4-Tier Verification Suite
 sudo ./hft_tuning.sh --verify
 ```
 
 ---
 
-## 🚀 GRUB / Kernel Boot Parameters
+## 🚀 GRUB / Kernel Boot Parameters (Production & Deterministic)
 
-For cores reserved for trading, add the master boot parameter string to your bootloader configuration.
+### Safe, Production-Grade Master Boot String (Cores 1–N Isolated)
+For modern Linux distributions (AlmaLinux 10 / RHEL 10, kernel 6.12+), apply this safe, deterministic boot parameter string:
 
-### The Master HFT Boot String (Example for Cores 1–N Isolated)
 ```text
-isolcpus=managed_irq,domain,1-15 nohz=on nohz_full=1-15 rcu_nocbs=1-15 rcu_nocb_poll rcupdate.rcu_normal_after_boot=1 skew_tick=1 cpuidle.off=1 processor.max_cstate=0 idle=poll amd_pstate=disable clocksource=tsc tsc=reliable nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=1G hugepagesz=1G hugepages=16 pcie_aspm=off mitigations=off
+isolcpus=domain,nohz,1-11 nohz=on nohz_full=1-11 rcu_nocbs=1-11 rcupdate.rcu_normal_after_boot=1 skew_tick=1 nosmt audit=0 mce=ignore_ce transparent_hugepage=never pcie_aspm=off mitigations=off
 ```
 
-### Parameter Breakdown
+### Parameter Breakdown & Architectural Rationale
 
-| Category | Boot Parameter | Functional Goal / Description |
+| Category | Boot Parameter | Functional Goal / Low-Latency Rationale |
 | :--- | :--- | :--- |
-| **Core Shielding** | `isolcpus=managed_irq,domain,1-15` | Removes isolated cores from the CFS scheduler balancing domain and migrates managed device interrupts. |
+| **Core Shielding** | `isolcpus=domain,nohz,1-11` | Isolates Cores 1–11 from the CFS scheduler balancing domain and timer ticks without disrupting hardware managed queues. |
 | **Core Shielding** | `nohz=on` | Enables generic dynamic tick subsystem infrastructure. |
-| **Core Shielding** | `nohz_full=1-15` | Disables the 1000 Hz kernel scheduler tick on cores with 1 runnable task (adaptive tickless mode). |
-| **Core Shielding** | `rcu_nocbs=1-15` | Offloads RCU garbage collection callbacks away from trading cores to housekeeping Core 0. |
-| **Core Shielding** | `rcu_nocb_poll` | Puts RCU offload kthreads into continuous polling mode (eliminates timer IPI interrupts). |
+| **Core Shielding** | `nohz_full=1-11` | Disables the 1000 Hz kernel scheduler tick on cores with 1 runnable task (adaptive tickless mode). |
+| **Core Shielding** | `rcu_nocbs=1-11` | Offloads RCU garbage collection callbacks away from trading cores to housekeeping Core 0. |
 | **Core Shielding** | `rcupdate.rcu_normal_after_boot=1` | Accelerates boot via expedited grace periods, then restores non-disruptive normal RCU at runtime. |
 | **Core Shielding** | `skew_tick=1` | Desynchronizes timer interrupts across CPU cores to prevent simultaneous memory bus stampedes. |
-| **Power & C-State** | `cpuidle.off=1` | Hard-disables the Linux generic cpuidle framework across all cores. |
-| **Power & C-State** | `processor.max_cstate=0` | Clamps ACPI processor power states strictly to C0 (Active execution). |
-| **Power & C-State** | `idle=poll` | Replaces CPU halt/mwait instructions with a 0ns busy-wait polling loop. |
-| **Power & C-State** | `amd_pstate=disable` | Disables autonomous hardware P-state scaling, falling back to deterministic `acpi-cpufreq`. |
-| **Hardware Determinism** | `clocksource=tsc` | Enforces the direct CPU Time Stamp Counter as the system clock. |
-| **Hardware Determinism** | `tsc=reliable` | Disables clocksource verification watchdogs that periodically disrupt TSC. |
 | **Hardware Determinism** | `nosmt` | Disables hyperthreading / SMT at the kernel entry point. |
 | **Hardware Determinism** | `audit=0` | Strips kernel system call audit logging (~30ns saved per syscall). |
 | **Hardware Determinism** | `mce=ignore_ce` | Prevents CPU execution stalls when hardware correctable memory/bus errors occur. |
 | **Hardware Determinism** | `transparent_hugepage=never` | Prevents memory allocation freezing during runtime compaction. |
-| **Hardware Determinism** | `default_hugepagesz=1G` | Configures 1GB page size as the system hugepage default. |
-| **Hardware Determinism** | `hugepagesz=1G hugepages=16` | Pre-allocates static 1GB hugepages at boot time (16GB reserved pool). |
 | **Hardware Determinism** | `pcie_aspm=off` | Forces all PCIe interconnects to stay locked in L0 active power mode. |
 | **Hardware Determinism** | `mitigations=off` | Disables speculative execution barriers (Meltdown, Spectre, MDS, L1TF). |
+
+---
+
+### ⚠️ Post-Mortem: Dangerous Parameters to AVOID on Production Bare-Metal
+
+Previous iterations and common internet tuning guides often recommend parameters that are catastrophic on modern multi-queue NVMe / enterprise server hardware. **DO NOT USE** the following parameters:
+
+1. ❌ **`isolcpus=managed_irq`**:  
+   *Failure Mode*: Instructs the kernel to forbid assigning managed IRQs to isolated cores. On servers with multi-queue NVMe SSDs (e.g., Micron 7500 PRO with 12+ queues) or multi-queue 10GbE NICs, the `blk-mq` storage driver attempts to assign all queues to Core 0. When vector exhaustion or probe failures occur during early initramfs boot, the root NVMe array (e.g., `md127` Software RAID) fails to assemble, dropping the server into a hung state before pivoting to the root filesystem.
+2. ❌ **`systemd.cpu_affinity=0` + `rcu_nocb_poll` + `idle=poll`**:  
+   *Failure Mode*: `idle=poll` forces the CPU idle loop to busy-spin in C0 at 100% duty cycle. `rcu_nocb_poll` spawns 11 polling kthreads on Core 0 that continuously spin checking RCU queues. Clamping `systemd.cpu_affinity=0` pins PID 1, udevd, dbus, and all system daemons to that exact same core. Core 0 instantly hits 100% saturation during boot, triggering scheduler starvation, udev timeout panics, and watchdog soft lockups.
+3. ❌ **`default_hugepagesz=1G`**:  
+   *Failure Mode*: Changing the default system page size to 1GB breaks user-space tools that call `mmap(MAP_HUGETLB)` expecting standard 2MB pages. Allocate 1GB hugepages dynamically or via sysctl post-boot, leaving the system default intact.
+4. ❌ **`tsc=reliable` / `clocksource=tsc`**:  
+   *Failure Mode*: Modern AMD Zen 5 CPUs natively detect invariant TSC. Forcing `tsc=reliable` bypasses early clocksource stability verification, risking early boot time freezes if platform timers are still synchronizing.
 
 ### Applying Boot Parameters & The Reboot Prompt
 

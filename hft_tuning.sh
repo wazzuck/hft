@@ -1413,7 +1413,7 @@ show_grub_parameters() {
     echo -e "     • Cores $trading_cores    : ${GREEN}Trading Cores${NC} (Isolated, tickless, zero-overhead)"
     echo ""
 
-    local grub_line="isolcpus=managed_irq,domain,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcu_nocb_poll rcupdate.rcu_normal_after_boot=1 skew_tick=1 cpuidle.off=1 processor.max_cstate=0 idle=poll amd_pstate=disable intel_pstate=disable clocksource=tsc tsc=reliable nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=1G hugepagesz=1G hugepages=${hp_count} pcie_aspm=off mitigations=off systemd.cpu_affinity=0 irqaffinity=0 iommu=pt"
+    local grub_line="isolcpus=domain,nohz,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcupdate.rcu_normal_after_boot=1 skew_tick=1 nosmt audit=0 mce=ignore_ce transparent_hugepage=never pcie_aspm=off mitigations=off"
 
     echo -e "${YELLOW}${BOLD}MASTER COMBINED GRUB_CMDLINE_LINUX STRING:${NC}"
     echo -e "${WHITE}${BOLD}--------------------------------------------------------------------------------${NC}"
@@ -1425,7 +1425,7 @@ show_grub_parameters() {
     local ref_file="$RESULTS_DIR/hft_grub_parameters_reference.txt"
     cat << EOF_GRUB_FILE > "$ref_file"
 # ==============================================================================
-# MASTER COMBINED HFT GRUB & KERNEL BOOT PARAMETERS
+# MASTER COMBINED HFT GRUB & KERNEL BOOT PARAMETERS (SAFE & DETERMINISTIC)
 # Generated for: $(hostname) ($total_cpus Cores, $numa_nodes NUMA Nodes)
 # ==============================================================================
 
@@ -1444,33 +1444,21 @@ EOF_GRUB_FILE
     echo -e "${CYAN}${BOLD}CATEGORIZED PARAMETER BREAKDOWN:${NC}"
     cat << "EOF_CAT"
   1. CPU Isolation & Scheduling:
-     • isolcpus=managed_irq,domain,<cores> : Isolates cores from CFS scheduler & managed device IRQs
+     • isolcpus=domain,nohz,<cores>        : Isolates cores from CFS scheduler domain and timer ticks
      • nohz=on nohz_full=<cores>           : Turns off hardware timer tick interrupts on trading cores
-     • rcu_nocbs=<cores> rcu_nocb_poll     : Offloads RCU callbacks to housekeeping threads
+     • rcu_nocbs=<cores>                   : Offloads RCU callbacks to housekeeping threads (without polling)
      • rcupdate.rcu_normal_after_boot=1    : Disables expedited RCU grace period IPI storms
      • skew_tick=1                         : Desynchronizes timer ticks across cores to prevent bus stampedes
 
-  2. Power Management & C-States (100% C0 Active):
-     • cpuidle.off=1             : Hard-disables cpuidle framework
-     • processor.max_cstate=0              : Restricts ACPI processor sleep states to C0
-     • idle=poll                           : Forces tight busy-spin loop on idle (0ns exit latency)
-     • amd_pstate=disable                : Reverts to acpi-cpufreq driver for manual frequency lock
-
-  3. Memory Subsystem & TLB Optimization:
+  2. Memory Subsystem & TLB Optimization:
      • transparent_hugepage=never          : Hard-disables runtime THP and khugepaged compaction
-     • default_hugepagesz=1G               : Sets default hugepage size to 1 Gigabyte
-     • hugepagesz=1G hugepages=16          : Pre-allocates 16GB of contiguous DRAM at early boot
 
-  4. Clocks & Timers:
-     • clocksource=tsc                     : Sets hardware TSC register as system clocksource
-     • tsc=reliable                        : Disables slow background clocksource watchdog thread
-
-  5. Interrupts & Peripheral Buses:
+  3. Interrupts & Peripheral Buses:
      • pcie_aspm=off                       : Disables PCIe Active State Power Management (no lane sleep)
      • mce=ignore_ce                       : Prevents Machine Check interrupts for corrected ECC errors
      • nosmt                               : Disables Hyper-Threading / SMT to prevent sibling core contention
 
-  6. Security Mitigation Overheads:
+  4. Security Mitigation Overheads:
      • audit=0                             : Strips audit evaluation hooks from all syscalls (-30ns/call)
      • mitigations=off                     : Disables KPTI, IBRS, retpolines, and buffer clearing (-200ns/call)
 EOF_CAT
@@ -1747,11 +1735,10 @@ apply_grub_parameters() {
         hp_count=8
     fi
 
-    local grub_line="isolcpus=managed_irq,domain,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcu_nocb_poll rcupdate.rcu_normal_after_boot=1 skew_tick=1 cpuidle.off=1 processor.max_cstate=0 idle=poll amd_pstate=disable intel_pstate=disable clocksource=tsc tsc=reliable nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=1G hugepagesz=1G hugepages=${hp_count} pcie_aspm=off mitigations=off systemd.cpu_affinity=0 irqaffinity=0 iommu=pt"
+    local grub_line="isolcpus=domain,nohz,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcupdate.rcu_normal_after_boot=1 skew_tick=1 nosmt audit=0 mce=ignore_ce transparent_hugepage=never pcie_aspm=off mitigations=off"
 
     print_info "Detected $phys_cores Physical Cores. Core isolation mask set to: Cores $trading_cores"
-    print_info "Allocating $hp_count x 1GB hugepages ($hp_count GB DRAM)."
-    print_info "Applying master boot string..."
+    print_info "Applying safe, production-grade master HFT boot string..."
 
     local applied=false
 
@@ -1961,22 +1948,14 @@ check_all_configs() {
         "isolcpus:CFS Scheduler Core Isolation:/sys/devices/system/cpu/isolated"
         "nohz_full:Adaptive Tickless Mode (1000Hz off):/sys/devices/system/cpu/nohz_full"
         "rcu_nocbs:RCU Garbage Collection Offloading:/sys/devices/virtual/workqueue/cpumask"
-        "rcu_nocb_poll:Polling RCU Offload Threads (No IPI):none"
-        "cpuidle.off=1:Disables CPU Idle Framework:none"
-        "processor.max_cstate=0:Limits ACPI Processor to C0 Only:none"
-        "idle=poll:0ns Busy-Polling Idle Loop:none"
-        "amd_pstate=disable:Disables Autonomous HWP Scaling:none"
-        "clocksource=tsc:Hardware TSC System Clock:/sys/devices/system/clocksource/clocksource0/current_clocksource"
-        "tsc=reliable:Disables Clocksource Watchdog:none"
+        "rcupdate.rcu_normal_after_boot=1:Suppresses RCU IPI Storms:none"
+        "skew_tick=1:Desynchronizes Timer Ticks:none"
         "nosmt:Disables SMT / Hyperthreading:none"
         "transparent_hugepage=never:Disables THP Dynamic Compaction:none"
-        "default_hugepagesz=1G:1GB Static Hugepages Reserved:/proc/meminfo"
         "pcie_aspm=off:Disables PCIe Active State Power Mgmt:none"
         "audit=0:Strips Syscall Audit Hooks (-30ns):none"
         "mitigations=off:Disables KPTI & Speculative Barriers:none"
-        "systemd.cpu_affinity=0:Pins OS Systemd Daemons to Core 0:none"
-        "irqaffinity=0:Pins Boot Hardware IRQs to Core 0:none"
-        "iommu=pt:Disables IOMMU DMA Translation:none"
+        "mce=ignore_ce:Suppresses Machine Check ECC Polling:none"
     )
 
     local boot_pass=0

@@ -1,13 +1,20 @@
 # ==============================================================================
-# MASTER COMBINED HFT GRUB & KERNEL BOOT PARAMETERS
-# Generated for: cherry (12 Cores, 1 NUMA Nodes)
+# MASTER COMBINED HFT GRUB & KERNEL BOOT PARAMETERS (SAFE & DETERMINISTIC)
+# Generated for: cherry (AMD Ryzen 9 9900X, 12 Cores, 1 NUMA Node)
+# Motherboard: Supermicro H13SRD-F (AMI Aptio Setup v2.22.1294)
 # ==============================================================================
 
 # Append to GRUB_CMDLINE_LINUX in /etc/default/grub:
-isolcpus=managed_irq,domain,1-11 nohz=on nohz_full=1-11 rcu_nocbs=1-11 rcu_nocb_poll rcupdate.rcu_normal_after_boot=1 skew_tick=1 cpuidle.off=1 processor.max_cstate=0 idle=poll amd_pstate=disable intel_pstate=disable clocksource=tsc tsc=reliable nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=1G hugepagesz=1G hugepages=16 pcie_aspm=off mitigations=off systemd.cpu_affinity=0 irqaffinity=0 iommu=off
+isolcpus=domain,nohz,1-11 nohz=on nohz_full=1-11 rcu_nocbs=1-11 rcupdate.rcu_normal_after_boot=1 skew_tick=1 nosmt audit=0 mce=ignore_ce transparent_hugepage=never pcie_aspm=off mitigations=off
 
-# Update bootloader on AlmaLinux 10 / RHEL 10 (or 9):
-#   sudo grub2-mkconfig -o /boot/grub2/grub.cfg       (Legacy BIOS)
-#   sudo grub2-mkconfig -o /boot/efi/EFI/almalinux/grub.cfg  (UEFI)
-# Or using grubby:
-#   sudo grubby --update-kernel=ALL --args="isolcpus=managed_irq,domain,1-11 nohz=on nohz_full=1-11 rcu_nocbs=1-11 rcu_nocb_poll rcupdate.rcu_normal_after_boot=1 skew_tick=1 cpuidle.off=1 processor.max_cstate=0 idle=poll amd_pstate=disable intel_pstate=disable clocksource=tsc tsc=reliable nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=1G hugepagesz=1G hugepages=16 pcie_aspm=off mitigations=off systemd.cpu_affinity=0 irqaffinity=0 iommu=off"
+# Update bootloader on AlmaLinux 10 / RHEL 10:
+#   sudo grubby --update-kernel=ALL --args="isolcpus=domain,nohz,1-11 nohz=on nohz_full=1-11 rcu_nocbs=1-11 rcupdate.rcu_normal_after_boot=1 skew_tick=1 nosmt audit=0 mce=ignore_ce transparent_hugepage=never pcie_aspm=off mitigations=off"
+# Or using grub2-mkconfig:
+#   sudo grub2-mkconfig -o /boot/efi/EFI/almalinux/grub.cfg
+
+# NOTE ON EXCLUDED DANGEROUS PARAMETERS:
+# - Do NOT use 'isolcpus=managed_irq': Starves NVMe blk-mq queues and halts mdraid boot.
+# - Do NOT use 'idle=poll', 'rcu_nocb_poll', or 'systemd.cpu_affinity=0': Saturates Core 0 at 100%, hanging boot.
+# - Do NOT use 'default_hugepagesz=1G': Breaks early userspace memory allocation.
+# - Do NOT use 'iommu=off': IOMMU is already disabled in Supermicro BIOS.
+# - C-states, SMT, CPB, and ASPM are already hardware-disabled in Supermicro BIOS menus.
