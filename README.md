@@ -28,13 +28,14 @@ Built for **multi-NUMA bare-metal production servers**, physical **Intel 10Gbps 
 4. [BIOS / UEFI Firmware Configuration](#-bios--uefi-firmware-configuration-amd-ryzen-9-9950x--x870e)
 5. [GRUB / Kernel Boot Parameters](#-grub--kernel-boot-parameters)
 6. [Automated Remote Server Provisioning](#-automated-remote-server-provisioning)
-7. [Simulation Environment Setup (AlmaLinux 10 on KVM)](#-simulation-environment-setup-almalinux-10-on-kvm)
-8. [The Top 13 Runtime Kernel & OS Tunings](#-the-top-13-runtime-kernel--os-tunings)
-9. [Modern Kernel-Bypass Networking (AF_XDP on Intel 10GbE)](#-modern-kernel-bypass-networking-af_xdp-on-intel-10gbe)
+7. [The Top 13 Runtime Kernel & OS Tunings](#-the-top-13-runtime-kernel--os-tunings)
+8. [Modern Kernel-Bypass Networking (AF_XDP on Intel 10GbE)](#-modern-kernel-bypass-networking-af_xdp-on-intel-10gbe)
+9. [Simulation Environment Setup (AlmaLinux 10 on KVM)](#-simulation-environment-setup-almalinux-10-on-kvm)
 10. [Step-by-Step Execution Guide (`hft_tuning.sh`)](#-step-by-step-execution-guide-hft_tuningsh)
 11. [The 4-Tier Configuration Audit & Health Check](#-the-4-tier-configuration-audit--health-check)
 12. [Nanosecond Precision Benchmarking Engine](#-nanosecond-precision-benchmarking-engine)
-13. [Troubleshooting & Verification](#-troubleshooting--verification)
+13. [Verified Bare-Metal Production Results (`cherry`)](#-verified-bare-metal-production-results-amd-ryzen-9-9950x-cherry)
+14. [Troubleshooting & Verification](#-troubleshooting--verification)
 
 ---
 
@@ -1118,62 +1119,6 @@ Host trading-srv01
 
 ---
 
-## 🧪 Simulation Environment Setup (AlmaLinux 10 on KVM)
-
-To validate scripts, AF_XDP ring buffers, and sysctl routines before deploying to live hardware, a fully automated KVM simulation is included.
-
-### Launching and Managing the Simulation VM
-```bash
-cd simulation
-./setup_simulation.sh create   # Spin up fresh AlmaLinux 10 VM (~10s)
-./setup_simulation.sh status   # Check VM run state and assigned IP
-./setup_simulation.sh ssh      # Log directly into the running VM
-./setup_simulation.sh sync     # Pull benchmark results into local ./results/
-./setup_simulation.sh destroy  # Tear down VM and erase temporary disk
-```
-
-### ⚡ One-Shot Simulation Recreation & Automated Provisioning (`recreate_simulation.sh`)
-
-For a completely automated, zero-touch tear-down and rebuild of the AlmaLinux simulation environment, use [`recreate_simulation.sh`](file:///home/neville/hft/recreate_simulation.sh). It chains the entire lifecycle into a single pipeline:
-
-```bash
-# Interactive mode (prompts for confirmation before destroying):
-./recreate_simulation.sh
-
-# Headless / Unattended mode (auto-confirms teardown):
-./recreate_simulation.sh -y
-```
-
-#### What the Recreate Pipeline Automates:
-1. **VM Teardown**: Calls `setup_simulation.sh destroy` to terminate `hft-alma`, undefine the domain, and erase the temporary copy-on-write disk overlay.
-2. **Pristine Rebuild**: Calls `setup_simulation.sh create` to spin up a fresh AlmaLinux 10 VM from base image with host CPU/cache passthrough and cloud-init SSH injection.
-3. **Remote Server Toolchain Provisioning**: Runs [`setup_remote_server.sh`](file:///home/neville/hft/setup_remote_server.sh) to:
-   - Synchronize local SSH credentials so the VM can pull from private Git repositories.
-   - Enable AlmaLinux CRB (CodeReady Linux Builder) and EPEL package repositories.
-   - Install C/C++ compiler toolchains (`gcc`, `g++`, `make`, `cmake`), low-latency kernel bypass packages (`libxdp`, `libbpf`), profiling tools (`perf`, `numactl`, `cyclictest`), and download utilities (`wget`, `curl`).
-   - Authenticate with GitHub and clone `git@github.com:wazzuck/hft.git` to `~/hft`.
-   - Clone `git@github.com:wazzuck/vunderland.git` to `~/vunderland` and execute `vunderland/settings/setup.sh` (provisions micromamba, Python base environment, Rust toolchain, and developer dotfiles).
-   - Configure master latency tuning engine strictly in `~/hft/hft_tuning.sh`.
-4. **Environment Setup & AGY CLI Installation**: Connects to the VM over SSH and executes [`install.sh`](file:///home/neville/hft/install.sh):
-   - Installs `tmux`, `git`, `curl`, and `ca-certificates`.
-   - Downloads and installs the **Google Antigravity CLI (`agy`)** via its official bootstrapper.
-   - Configures `PATH` persistence in `~/.bashrc`.
-5. **Post-Setup Health Verification**: Validates operating system version, `git`, `tmux`, `agy`, `hft` repo, `vunderland` repo, micromamba, and Rust toolchain on the VM, confirming it is fully ready for low-latency tuning experiments.
-
----
-
-### Simulation Specifics
-- **OS**: AlmaLinux 10 (GenericCloud QCOW2 image)
-- **Networking**: Bridged NAT with static IP (`192.168.122.210`)
-- **Cloud-Init**: Injects local SSH keys and provisions user `neville` with passwordless sudo.
-- **SSH Alias**: Connect instantly via `ssh hft-sim`.
-
-> [!NOTE]
-> **Virtual Machine vs. Bare-Metal Latency:**
-> In KVM, hypervisor preemption ("steal time") and virtual clock emulation (`kvm-clock`) introduce millisecond-scale jitter spikes. The VM exists to test **code correctness, build pipelines, and AF_XDP descriptor rings** safely without risking live trading systems.
-
----
-
 ## ⚡ The Top 13 Runtime Kernel & OS Tunings
 
 These 13 configurations are applied at runtime by [`hft_tuning.sh`](file:///home/neville/hft/hft_tuning.sh) without requiring a system reboot:
@@ -1687,6 +1632,62 @@ void af_xdp_rx_loop() {
     }
 }
 ```
+
+---
+
+## 🧪 Simulation Environment Setup (AlmaLinux 10 on KVM)
+
+To validate scripts, AF_XDP ring buffers, and sysctl routines before deploying to live hardware, a fully automated KVM simulation is included.
+
+### Launching and Managing the Simulation VM
+```bash
+cd simulation
+./setup_simulation.sh create   # Spin up fresh AlmaLinux 10 VM (~10s)
+./setup_simulation.sh status   # Check VM run state and assigned IP
+./setup_simulation.sh ssh      # Log directly into the running VM
+./setup_simulation.sh sync     # Pull benchmark results into local ./results/
+./setup_simulation.sh destroy  # Tear down VM and erase temporary disk
+```
+
+### ⚡ One-Shot Simulation Recreation & Automated Provisioning (`recreate_simulation.sh`)
+
+For a completely automated, zero-touch tear-down and rebuild of the AlmaLinux simulation environment, use [`recreate_simulation.sh`](file:///home/neville/hft/recreate_simulation.sh). It chains the entire lifecycle into a single pipeline:
+
+```bash
+# Interactive mode (prompts for confirmation before destroying):
+./recreate_simulation.sh
+
+# Headless / Unattended mode (auto-confirms teardown):
+./recreate_simulation.sh -y
+```
+
+#### What the Recreate Pipeline Automates:
+1. **VM Teardown**: Calls `setup_simulation.sh destroy` to terminate `hft-alma`, undefine the domain, and erase the temporary copy-on-write disk overlay.
+2. **Pristine Rebuild**: Calls `setup_simulation.sh create` to spin up a fresh AlmaLinux 10 VM from base image with host CPU/cache passthrough and cloud-init SSH injection.
+3. **Remote Server Toolchain Provisioning**: Runs [`setup_remote_server.sh`](file:///home/neville/hft/setup_remote_server.sh) to:
+   - Synchronize local SSH credentials so the VM can pull from private Git repositories.
+   - Enable AlmaLinux CRB (CodeReady Linux Builder) and EPEL package repositories.
+   - Install C/C++ compiler toolchains (`gcc`, `g++`, `make`, `cmake`), low-latency kernel bypass packages (`libxdp`, `libbpf`), profiling tools (`perf`, `numactl`, `cyclictest`), and download utilities (`wget`, `curl`).
+   - Authenticate with GitHub and clone `git@github.com:wazzuck/hft.git` to `~/hft`.
+   - Clone `git@github.com:wazzuck/vunderland.git` to `~/vunderland` and execute `vunderland/settings/setup.sh` (provisions micromamba, Python base environment, Rust toolchain, and developer dotfiles).
+   - Configure master latency tuning engine strictly in `~/hft/hft_tuning.sh`.
+4. **Environment Setup & AGY CLI Installation**: Connects to the VM over SSH and executes [`install.sh`](file:///home/neville/hft/install.sh):
+   - Installs `tmux`, `git`, `curl`, and `ca-certificates`.
+   - Downloads and installs the **Google Antigravity CLI (`agy`)** via its official bootstrapper.
+   - Configures `PATH` persistence in `~/.bashrc`.
+5. **Post-Setup Health Verification**: Validates operating system version, `git`, `tmux`, `agy`, `hft` repo, `vunderland` repo, micromamba, and Rust toolchain on the VM, confirming it is fully ready for low-latency tuning experiments.
+
+---
+
+### Simulation Specifics
+- **OS**: AlmaLinux 10 (GenericCloud QCOW2 image)
+- **Networking**: Bridged NAT with static IP (`192.168.122.210`)
+- **Cloud-Init**: Injects local SSH keys and provisions user `neville` with passwordless sudo.
+- **SSH Alias**: Connect instantly via `ssh hft-sim`.
+
+> [!NOTE]
+> **Virtual Machine vs. Bare-Metal Latency:**
+> In KVM, hypervisor preemption ("steal time") and virtual clock emulation (`kvm-clock`) introduce millisecond-scale jitter spikes. The VM exists to test **code correctness, build pipelines, and AF_XDP descriptor rings** safely without risking live trading systems.
 
 ---
 
