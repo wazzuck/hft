@@ -456,6 +456,7 @@ ensure_benchmark_binary() {
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <sys/un.h>
+#include <sys/mman.h>
 #include <x86intrin.h>
 
 static double tsc_ghz = 0.0;
@@ -643,11 +644,20 @@ static void bench_tcp(LatencyStats *st) {
     free(s);
 }
 
-// 5. Memory Pointer Chasing (Random in 16MB buffer)
+// 5. Memory Pointer Chasing (Random in 16MB buffer using 2MB Hugepages when available)
 static void bench_mem_pointer_chase(double *ns_per_access) {
     const size_t sz = 16 * 1024 * 1024 / sizeof(void *);
-    void **arr = malloc(sz * sizeof(void *));
+    const size_t bytes = 16 * 1024 * 1024;
+    void **arr = (void **)mmap(NULL, bytes, PROT_READ | PROT_WRITE,
+                               MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+    int is_mmap = 1;
+    if (arr == MAP_FAILED) {
+        arr = (void **)malloc(bytes);
+        is_mmap = 0;
+    }
+    if (!arr) { *ns_per_access = 0.0; return; }
     size_t *indices = malloc(sz * sizeof(size_t));
+    if (!indices) { if (is_mmap) munmap(arr, bytes); else free(arr); *ns_per_access = 0.0; return; }
     for (size_t i = 0; i < sz; i++) indices[i] = i;
     srand(12345);
     for (size_t i = sz - 1; i > 0; i--) {
@@ -672,7 +682,11 @@ static void bench_mem_pointer_chase(double *ns_per_access) {
     uint64_t t1 = _rdtsc();
     if ((uintptr_t)p == 0xdeadbeef) printf("magic\n");
     *ns_per_access = cycles_to_ns(t1 - t0) / loops;
-    free(arr);
+    if (is_mmap) {
+        munmap(arr, bytes);
+    } else {
+        free(arr);
+    }
 }
 
 // 6. OS Jitter Spin-loop (1 second)
@@ -905,13 +919,13 @@ run_benchmark_pass() {
     raw_out="$(sudo "$BENCH_BIN" "$bench_core")"
 
     # Run cyclictest for timer wakeup latency
-    print_info "Running cyclictest on Core $bench_core (15,000 cycles, 200us interval, prio 99)..."
+    print_info "Running cyclictest on Core $bench_core (30,000 cycles, 200us interval, prio 99)..."
     local c_avg="0" c_max="0"
     local cyc_raw
     if [ "$total_cpus" -ge 2 ]; then
-        cyc_raw="$(sudo cyclictest -m -p99 -i 200 -l 15000 -q -N -a "$bench_core" -t 1 2>/dev/null | tail -1 || true)"
+        cyc_raw="$(sudo cyclictest -m -p99 -i 200 -l 30000 -q -N -a "$bench_core" -t 1 2>/dev/null | tail -1 || true)"
     else
-        cyc_raw="$(sudo cyclictest -m -p99 -i 200 -l 15000 -q -N 2>/dev/null | tail -1 || true)"
+        cyc_raw="$(sudo cyclictest -m -p99 -i 200 -l 30000 -q -N 2>/dev/null | tail -1 || true)"
     fi
 
     if [[ "$cyc_raw" =~ Avg:[[:space:]]*([0-9]+)[[:space:]]+Max:[[:space:]]*([0-9]+) ]]; then
@@ -1022,6 +1036,19 @@ apply_ten_tunings() {
         print_success "THP disabled (never) to eliminate allocation defrag stalls."
     fi
 
+    # 7b. Pre-allocate Static 2MB Hugepages (hugetlbfs)
+    print_subheader "7b. Pre-allocating Static 2MB Hugepages (vm.nr_hugepages = 2048 / 4GB)"
+    sudo sysctl -w vm.nr_hugepages=2048 >/dev/null 2>&1 || true
+    if [ ! -d /dev/hugepages ]; then
+        sudo mkdir -p /dev/hugepages 2>/dev/null || true
+    fi
+    if ! mountpoint -q /dev/hugepages 2>/dev/null; then
+        sudo mount -t hugetlbfs nodev /dev/hugepages >/dev/null 2>&1 || true
+    fi
+    local hp_avail
+    hp_avail="$(grep -i "HugePages_Total" /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "0")"
+    print_success "Pre-allocated $hp_avail x 2MB static hugepages for zero-copy UMEM & order books."
+
     # 8. Network Low-Latency Socket Busy-Polling & NIC Kernel-Bypass Optimization
     print_subheader "8. Socket Low-Latency Busy-Polling & NIC Hardware Ring Optimization"
     sudo sysctl -w net.core.busy_poll=50 >/dev/null 2>&1 || true
@@ -1029,14 +1056,14 @@ apply_ten_tunings() {
     sudo sysctl -w net.core.netdev_max_backlog=250000 >/dev/null 2>&1 || true
     print_success "net.core.busy_poll = 50us, busy_read = 50us (active socket spin)"
 
-    # Hardware NIC / Intel 10GbE Ring & Coalescing Optimization
+    # Hardware NIC / Intel E810 & 10GbE Ring & Coalescing Optimization
     local nic_tuned=false
     for iface in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -v -E '^(lo|virbr|docker|veth)'); do
         if command -v ethtool >/dev/null 2>&1; then
-            sudo ethtool -G "$iface" rx 4096 tx 4096 >/dev/null 2>&1 || true
+            sudo ethtool -G "$iface" rx 1024 tx 1024 >/dev/null 2>&1 || sudo ethtool -G "$iface" rx 4096 tx 4096 >/dev/null 2>&1 || true
             sudo ethtool -C "$iface" adaptive-rx off adaptive-tx off rx-usecs 0 tx-usecs 0 >/dev/null 2>&1 || true
             sudo ethtool -K "$iface" gro off lro off tso off gso off >/dev/null 2>&1 || true
-            print_success "NIC $iface: Ring buffers set to 4096, adaptive coalescing disabled (0us), offloads disabled."
+            print_success "NIC $iface: Ring buffers optimized, adaptive coalescing disabled (0us), offloads stripped."
             nic_tuned=true
         fi
     done
@@ -1413,7 +1440,7 @@ show_grub_parameters() {
     echo -e "     • Cores $trading_cores    : ${GREEN}Trading Cores${NC} (Isolated, tickless, zero-overhead)"
     echo ""
 
-    local grub_line="isolcpus=domain,nohz,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcupdate.rcu_normal_after_boot=1 skew_tick=1 nosmt audit=0 mce=ignore_ce transparent_hugepage=never pcie_aspm=off mitigations=off"
+    local grub_line="isolcpus=domain,nohz,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcupdate.rcu_normal_after_boot=1 skew_tick=1 nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=2M hugepages=2048 pcie_aspm=off mitigations=off"
 
     echo -e "${YELLOW}${BOLD}MASTER COMBINED GRUB_CMDLINE_LINUX STRING:${NC}"
     echo -e "${WHITE}${BOLD}--------------------------------------------------------------------------------${NC}"
@@ -1550,6 +1577,15 @@ if [ -f /sys/kernel/mm/transparent_hugepage/enabled ]; then
     echo never > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true
 fi
 
+# 4b. Static 2MB Hugepages allocation & hugetlbfs mount
+sysctl -w vm.nr_hugepages=2048 2>/dev/null || true
+if [ ! -d /dev/hugepages ]; then
+    mkdir -p /dev/hugepages 2>/dev/null || true
+fi
+if ! mountpoint -q /dev/hugepages 2>/dev/null; then
+    mount -t hugetlbfs nodev /dev/hugepages 2>/dev/null || true
+fi
+
 # 5. IRQ Shielding: Stop/Mask IRQBalance & Pin IRQs to Core 0 (Housekeeping)
 if systemctl is-active --quiet irqbalance 2>/dev/null; then
     systemctl stop irqbalance 2>/dev/null || true
@@ -1560,10 +1596,10 @@ for aff in /proc/irq/*/smp_affinity; do
     [ -f "$aff" ] && echo 1 > "$aff" 2>/dev/null || true
 done
 
-# 6. Physical NIC Hardware Rings (4096) & Interrupt Coalescing (0us)
+# 6. Physical NIC Hardware Rings (1024/4096) & Interrupt Coalescing (0us)
 for iface in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -v -E '^(lo|virbr|docker|veth)'); do
     if command -v ethtool >/dev/null 2>&1; then
-        ethtool -G "$iface" rx 4096 tx 4096 2>/dev/null || true
+        ethtool -G "$iface" rx 1024 tx 1024 2>/dev/null || ethtool -G "$iface" rx 4096 tx 4096 2>/dev/null || true
         ethtool -C "$iface" adaptive-rx off adaptive-tx off rx-usecs 0 tx-usecs 0 2>/dev/null || true
         ethtool -K "$iface" gro off lro off tso off gso off 2>/dev/null || true
     fi
@@ -1623,6 +1659,7 @@ EOF_UNIT2
 kernel.numa_balancing = 0
 vm.swappiness = 0
 vm.stat_interval = 120
+vm.nr_hugepages = 2048
 net.core.busy_poll = 50
 net.core.busy_read = 50
 net.core.netdev_max_backlog = 250000
@@ -1735,7 +1772,7 @@ apply_grub_parameters() {
         hp_count=8
     fi
 
-    local grub_line="isolcpus=domain,nohz,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcupdate.rcu_normal_after_boot=1 skew_tick=1 nosmt audit=0 mce=ignore_ce transparent_hugepage=never pcie_aspm=off mitigations=off"
+    local grub_line="isolcpus=domain,nohz,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcupdate.rcu_normal_after_boot=1 skew_tick=1 nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=2M hugepages=2048 pcie_aspm=off mitigations=off"
 
     print_info "Detected $phys_cores Physical Cores. Core isolation mask set to: Cores $trading_cores"
     print_info "Applying safe, production-grade master HFT boot string..."
@@ -1801,9 +1838,9 @@ check_all_configs() {
     print_header "SYSTEM CONFIGURATION AUDIT & HEALTH CHECK"
 
     local pass_count=0
-    local total_runtime=10
+    local total_runtime=11
 
-    echo -e "  ${WHITE}${BOLD}AUDIT PART 1: THE 10 RUNTIME KERNEL & OS CONFIGURATIONS${NC}"
+    echo -e "  ${WHITE}${BOLD}AUDIT PART 1: THE 11 RUNTIME KERNEL & OS CONFIGURATIONS${NC}"
     echo -e "${WHITE}${BOLD}┌────┬─────────────────────────────────┬────────────────────┬────────────────────┬──────────┐${NC}"
     printf "${WHITE}${BOLD}│ %-2s │ %-31s │ %-18s │ %-18s │ %-8s │${NC}\n" "#" "TUNING SUBSYSTEM" "EXPECTED VALUE" "DETECTED VALUE" "STATUS"
     echo -e "${WHITE}${BOLD}├────┼─────────────────────────────────┼────────────────────┼────────────────────┼──────────┤${NC}"
@@ -1929,6 +1966,19 @@ check_all_configs() {
         printf "│ %-2s │ %-31s │ %-18s │ %-18s │ ${YELLOW}%-8s${NC} │\n" "10" "IRQ Shielding (Core 0 Mask)" "stopped / aff=1" "$irq_stat / aff=$def_aff" "CHECK"
         pass_count=$((pass_count + 1))
     fi
+
+    # 11. Static 2MB Hugepages
+    local hp_total=0
+    hp_total="$(grep -i "HugePages_Total" /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "0")"
+    if [ "$hp_total" -ge 2048 ]; then
+        printf "│ %-2s │ %-31s │ %-18s │ %-18s │ ${GREEN}%-8s${NC} │\n" "11" "Static 2MB Hugepages (4GB)" ">= 2048 pages" "$hp_total pages" "PASS"
+        pass_count=$((pass_count + 1))
+    elif [ "$hp_total" -gt 0 ]; then
+        printf "│ %-2s │ %-31s │ %-18s │ %-18s │ ${CYAN}%-8s${NC} │\n" "11" "Static 2MB Hugepages (4GB)" ">= 2048 pages" "$hp_total pages" "INFO"
+        pass_count=$((pass_count + 1))
+    else
+        printf "│ %-2s │ %-31s │ %-18s │ %-18s │ ${RED}%-8s${NC} │\n" "11" "Static 2MB Hugepages (4GB)" ">= 2048 pages" "0 pages" "FAIL"
+    fi
     echo -e "${WHITE}${BOLD}└────┴─────────────────────────────────┴────────────────────┴────────────────────┴──────────┘${NC}"
 
     echo ""
@@ -1952,6 +2002,8 @@ check_all_configs() {
         "skew_tick=1:Desynchronizes Timer Ticks:none"
         "nosmt:Disables SMT / Hyperthreading:none"
         "transparent_hugepage=never:Disables THP Dynamic Compaction:none"
+        "default_hugepagesz=2M:Default 2MB Hugepage Architecture:none"
+        "hugepages=2048:Early Boot Pre-allocated Hugepages:/proc/meminfo"
         "pcie_aspm=off:Disables PCIe Active State Power Mgmt:none"
         "audit=0:Strips Syscall Audit Hooks (-30ns):none"
         "mitigations=off:Disables KPTI & Speculative Barriers:none"

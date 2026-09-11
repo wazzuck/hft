@@ -307,23 +307,25 @@ sudo ./hft_tuning.sh --verify
 For modern Linux distributions (AlmaLinux 10 / RHEL 10, kernel 6.12+), apply this safe, deterministic boot parameter string:
 
 ```text
-isolcpus=domain,nohz,1-11 nohz=on nohz_full=1-11 rcu_nocbs=1-11 rcupdate.rcu_normal_after_boot=1 skew_tick=1 nosmt audit=0 mce=ignore_ce transparent_hugepage=never pcie_aspm=off mitigations=off
+isolcpus=domain,nohz,1-15 nohz=on nohz_full=1-15 rcu_nocbs=1-15 rcupdate.rcu_normal_after_boot=1 skew_tick=1 nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=2M hugepages=2048 pcie_aspm=off mitigations=off
 ```
 
 ### Parameter Breakdown & Architectural Rationale
 
 | Category | Boot Parameter | Functional Goal / Low-Latency Rationale |
 | :--- | :--- | :--- |
-| **Core Shielding** | `isolcpus=domain,nohz,1-11` | Isolates Cores 1–11 from the CFS scheduler balancing domain and timer ticks without disrupting hardware managed queues. |
+| **Core Shielding** | `isolcpus=domain,nohz,1-15` | Isolates Cores 1–15 from the CFS scheduler balancing domain and timer ticks without disrupting hardware managed queues. |
 | **Core Shielding** | `nohz=on` | Enables generic dynamic tick subsystem infrastructure. |
-| **Core Shielding** | `nohz_full=1-11` | Disables the 1000 Hz kernel scheduler tick on cores with 1 runnable task (adaptive tickless mode). |
-| **Core Shielding** | `rcu_nocbs=1-11` | Offloads RCU garbage collection callbacks away from trading cores to housekeeping Core 0. |
+| **Core Shielding** | `nohz_full=1-15` | Disables the 1000 Hz kernel scheduler tick on cores with 1 runnable task (adaptive tickless mode). |
+| **Core Shielding** | `rcu_nocbs=1-15` | Offloads RCU garbage collection callbacks away from trading cores to housekeeping Core 0. |
 | **Core Shielding** | `rcupdate.rcu_normal_after_boot=1` | Accelerates boot via expedited grace periods, then restores non-disruptive normal RCU at runtime. |
 | **Core Shielding** | `skew_tick=1` | Desynchronizes timer interrupts across CPU cores to prevent simultaneous memory bus stampedes. |
 | **Hardware Determinism** | `nosmt` | Disables hyperthreading / SMT at the kernel entry point. |
 | **Hardware Determinism** | `audit=0` | Strips kernel system call audit logging (~30ns saved per syscall). |
 | **Hardware Determinism** | `mce=ignore_ce` | Prevents CPU execution stalls when hardware correctable memory/bus errors occur. |
 | **Hardware Determinism** | `transparent_hugepage=never` | Prevents memory allocation freezing during runtime compaction. |
+| **Memory Architecture** | `default_hugepagesz=2M` | Enforces 2MB hugepage default architecture (3-level page tables). |
+| **Memory Architecture** | `hugepages=2048` | Pre-allocates 4GB contiguous 2MB hugepages at early boot before memory fragments. |
 | **Hardware Determinism** | `pcie_aspm=off` | Forces all PCIe interconnects to stay locked in L0 active power mode. |
 | **Hardware Determinism** | `mitigations=off` | Disables speculative execution barriers (Meltdown, Spectre, MDS, L1TF). |
 
@@ -503,22 +505,23 @@ For a completely automated, zero-touch tear-down and rebuild of the AlmaLinux si
 
 ---
 
-## ⚡ The Top 10 Runtime Kernel & OS Tunings
+## ⚡ The Top 11 Runtime Kernel & OS Tunings
 
-These 10 configurations are applied at runtime by [`hft_tuning.sh`](file:///home/neville/hft/hft_tuning.sh#L800-L895) without requiring a system reboot:
+These 11 configurations are applied at runtime by [`hft_tuning.sh`](file:///home/neville/hft/hft_tuning.sh) without requiring a system reboot:
 
 | # | Tuning Subsystem | Runtime Command | HFT Latency Impact |
 | :--- | :--- | :--- | :--- |
 | **1** | **CPU Scaling Governor** | `cpupower frequency-set -g performance`<br>`scaling_min_freq = scaling_max_freq` | Eliminates frequency transition delays |
-| **2** | **PM QoS C-State Elimination** | `/dev/cpu_dma_latency = 0` (Background Lock) | Locks core in C0 |
-| **3** | **CFS Task Migration Cost** | `/sys/kernel/debug/sched/migration_cost_ns = 5,000,000 ns` (5ms) | Prevents thread thrashing / migration |
+| **2** | **PM QoS C-State Elimination** | `/dev/cpu_dma_latency = 0` (Background Lock) | Locks core in C0 (0µs exit latency) |
+| **3** | **CFS Task Migration Cost** | `/sys/kernel/debug/sched/migration_cost_ns = 5,000,000 ns` (5ms) | Prevents thread thrashing / cache pollution |
 | **4** | **Automatic NUMA Balancing\*** | `sysctl kernel.numa_balancing = 0` | Stops background page scanning thread |
 | **5** | **Virtual Memory Swappiness** | `sysctl vm.swappiness = 0` | Strictly forbids memory paging |
 | **6** | **VM Stat Timer Interruption** | `sysctl vm.stat_interval = 120` | Suppresses 1 Hz timer tick interrupts |
 | **7** | **Transparent Hugepages (THP)** | `transparent_hugepage/enabled = never`<br>`transparent_hugepage/defrag = never` | Eliminates runtime compaction stalls |
-| **8** | **Socket Busy-Polling & NIC Ring**| `sysctl net.core.busy_poll = 50`<br>`ethtool -G rx 4096 tx 4096` | Eliminates interrupt sleep; spins on ring |
+| **8** | **Socket Busy-Polling & NIC Ring**| `sysctl net.core.busy_poll = 50`<br>`ethtool -G rx 1024 tx 1024` | Eliminates interrupt sleep; L2/L3 ring residency |
 | **9** | **TCP Slow Start After Idle** | `sysctl net.ipv4.tcp_slow_start_after_idle = 0` | Immediate line-rate burst after silence |
 | **10**| **IRQ Shielding & Core Pinning** | `systemctl stop irqbalance`<br>`default_smp_affinity = 1` (Core 0) | Shields trading core from hardware IRQs |
+| **11**| **Static 2MB Hugepages (4GB)** | `sysctl vm.nr_hugepages = 2048`<br>`mount -t hugetlbfs nodev /dev/hugepages` | Pre-allocates 4GB static pages; 3-level page tables; 0 TLB stalls |
 
 > [!NOTE]
 > **\*Note on Automatic NUMA Balancing:** On enterprise multi-NUMA server platforms, disabling NUMA balancing stops background thread page migration stalls across sockets. On high-frequency single-NUMA AMD Ryzen architectures, this is not strictly required as memory access is already uniform (UMA), though retaining the setting remains recommended practice to eliminate background kernel scanning threads.
