@@ -28,7 +28,7 @@ Built for **multi-NUMA bare-metal production servers**, physical **Intel 10Gbps 
 4. [BIOS / UEFI Firmware Configuration](#-bios--uefi-firmware-configuration-amd-ryzen-9-9950x--x870e)
 5. [GRUB / Kernel Boot Parameters](#-grub--kernel-boot-parameters)
 6. [Automated Remote Server Provisioning](#-automated-remote-server-provisioning)
-7. [The Top 13 Runtime Kernel & OS Tunings](#-the-top-13-runtime-kernel--os-tunings)
+7. [Runtime Kernel & OS Tunings](#-runtime-kernel--os-tunings)
 8. [Modern Kernel-Bypass Networking (AF_XDP on Intel 10GbE)](#-modern-kernel-bypass-networking-af_xdp-on-intel-10gbe)
 9. [Simulation Environment Setup (AlmaLinux 10 on KVM)](#-simulation-environment-setup-almalinux-10-on-kvm)
 10. [Step-by-Step Execution Guide (`hft_tuning.sh`)](#-step-by-step-execution-guide-hft_tuningsh)
@@ -1119,7 +1119,7 @@ Host trading-srv01
 
 ---
 
-## ⚡ The Top 13 Runtime Kernel & OS Tunings
+## ⚡ Runtime Kernel & OS Tunings
 
 These 13 configurations are applied at runtime by [`hft_tuning.sh`](file:///home/neville/hft/hft_tuning.sh) without requiring a system reboot:
 
