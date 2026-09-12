@@ -12,8 +12,8 @@ Built for **multi-NUMA bare-metal production servers**, physical **Intel 10Gbps 
 > All benchmarking, kernel isolation routines, and tuning validations in this repository were tested and verified on a **single-NUMA node AMD Threadripper platform**, selected specifically because it provides the **highest sustained clock frequencies available** for deterministic tick-to-trade execution.
 >
 > In institutional production colocation, large-scale multi-exchange trading and market data systems frequently deploy **high-frequency, multi-NUMA node server platforms**—such as:
-> - **AMD Ryzen Threadripper PRO 7000WX / 9000WX** (e.g., 7960X, 7975WX, 7985WX with 4/8-channel DDR5 and NPS2/NPS4 NUMA partitioning),
-> - **AMD EPYC F-Series (Frequency-Optimized)** (e.g., EPYC 9174F, 9374F, 9575F with 12 memory channels and up to 5.0 GHz boost), or
+> - **AMD Ryzen Threadripper PRO 7000WX / 9000WX** (e.g., the latest 9000WX series such as the 9995WX, alongside 7960X, 7975WX with 4/8-channel DDR5 and NPS2/NPS4 NUMA partitioning),
+> - **AMD EPYC F-Series (Frequency-Optimized)** (e.g., the upcoming "Turin" architecture chips, as well as current EPYC 9174F, 9374F, 9575F with 12 memory channels and up to 5.0 GHz boost), or
 > - **Intel Xeon 6 with P-Cores (Granite Rapids)** (utilizing Sub-NUMA Clustering SNC3/SNC4 with MRDIMMs).
 >
 > *\*Asterisk Notation on NUMA:* Throughout this document, any mention of multi-NUMA controls (such as `kernel.numa_balancing`, memory interleaving, or cross-socket NUMA node binding) marked with an asterisk (\*) is provided for enterprise multi-NUMA production servers and is **not required on high-frequency AMD Ryzen (or single-NUMA node Threadripper) architectures**, where all memory is routed uniformly through a single I/O Die (UMA).
