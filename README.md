@@ -28,13 +28,14 @@ Built for **multi-NUMA bare-metal production servers**, physical **Intel 10Gbps 
 4. [BIOS / UEFI Firmware Configuration](#-bios--uefi-firmware-configuration-amd-ryzen-9-9950x--x870e)
 5. [GRUB / Kernel Boot Parameters](#-grub--kernel-boot-parameters)
 6. [Automated Remote Server Provisioning](#-automated-remote-server-provisioning)
-7. [Simulation Environment Setup (AlmaLinux 10 on KVM)](#-simulation-environment-setup-almalinux-10-on-kvm)
-8. [The Top 10 Runtime Kernel & OS Tunings](#-the-top-10-runtime-kernel--os-tunings)
-9. [Modern Kernel-Bypass Networking (AF_XDP on Intel 10GbE)](#-modern-kernel-bypass-networking-af_xdp-on-intel-10gbe)
+7. [Runtime Kernel & OS Tunings](#-runtime-kernel--os-tunings)
+8. [Modern Kernel-Bypass Networking (AF_XDP on Intel 10GbE)](#-modern-kernel-bypass-networking-af_xdp-on-intel-10gbe)
+9. [Simulation Environment Setup (AlmaLinux 10 on KVM)](#-simulation-environment-setup-almalinux-10-on-kvm)
 10. [Step-by-Step Execution Guide (`hft_tuning.sh`)](#-step-by-step-execution-guide-hft_tuningsh)
 11. [The 4-Tier Configuration Audit & Health Check](#-the-4-tier-configuration-audit--health-check)
 12. [Nanosecond Precision Benchmarking Engine](#-nanosecond-precision-benchmarking-engine)
-13. [Troubleshooting & Verification](#-troubleshooting--verification)
+13. [Verified Bare-Metal Production Results (`cherry`)](#-verified-bare-metal-production-results-amd-ryzen-9-9950x-cherry)
+14. [Troubleshooting & Verification](#-troubleshooting--verification)
 
 ---
 
@@ -714,9 +715,223 @@ Follow these exact keystroke sequences mapped directly to the Supermicro H13SRD-
 1. Press `[F4]` (or press `[→]` to highlight the **`Save & Exit`** tab and select **`Save Changes and Reset`**).
 2. Select **`[Yes]`** to confirm and reboot.
 
+### 4. Comprehensive Deep Dive: Every BIOS / UEFI Setting Explained
+
+To eliminate jitter before the operating system even boots, you must configure the motherboard firmware (BIOS/UEFI). Below is an exhaustive breakdown of **every single BIOS setting**, written from the perspective of low-latency market data processing.
+
 ---
 
-### 4. Post-Boot Linux Verification Commands
+#### BIOS Setting 1: Global C-state Control
+* **What it is:** C-states (Sleep States) are hardware power-saving modes. When a CPU core has no immediate instructions to execute, the motherboard firmware shuts down internal clock generators, lowers core voltages, and flushes CPU cache lines to save power. C0 is the fully active state, while C1, C2, and C6 represent progressively deeper sleep.
+* **Untuned Config Value:** `[Enabled]` or `[Auto]`
+* **Tuned Config Value:** `[Disabled]`
+* **What Difference It Makes:** When disabled, CPU cores are permanently locked in C0 active mode. They consume more idle power (~40-80W higher system power draw), but core wake-up latency drops from **50–150 microseconds to exactly 0 nanoseconds**.
+* **Why It's Important for Market Data:** Market data is bursty. During quiet millisecond gaps between exchange quote updates (e.g. between order book events on NASDAQ ITCH), the CPU enters C6 sleep. When the next quote packet hits the wire, the core is asleep and takes up to 150 µs to wake up! Disabling C-states guarantees your parser reacts instantly.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ GLOBAL C-STATE CONTROL: IDLE SLEEP vs CONTINUOUS EXECUTION              │
+├─────────────────────────────────────────────────────────────────────────┤
+│ UNTUNED ([Enabled]):                                                    │
+│ Core State: [ C6 Deep Sleep (Powered Off) ]                             │
+│ Market Quote arrives on wire ──> Wake-up signal sent to CPU             │
+│   ├── Voltage Regulator ramps up voltage (20 µs)                        │
+│   ├── Phase-Locked Loop (PLL) relocks clock frequency (30 µs)           │
+│   └── Cache controller restores pipeline state (50-100 µs)              │
+│ Total Penalty: 100 to 150 µs delay before your parser runs a single byte!│
+│                                                                         │
+│ TUNED ([Disabled]):                                                     │
+│ Core State: [ C0 Active (Executing at 100% duty cycle) ]                │
+│ Market Quote arrives on wire ──> Instant processing in 0 ns wake delay! │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### BIOS Setting 2: PSS Support (Processor Performance States)
+* **What it is:** ACPI PSS (Performance State Support) exposes dynamic frequency and voltage tables (P-states) to the Linux operating system. It allows operating system governors to throttle CPU clock speeds up or down depending on workload.
+* **Untuned Config Value:** `[Enabled]`
+* **Tuned Config Value:** `[Disabled]`
+* **What Difference It Makes:** Disabling PSS strips the ACPI dynamic scaling tables from the OS ACPI tables. The Linux kernel is prevented from throttling frequency; the CPU runs at a fixed, unvarying clock speed.
+* **Why It's Important for Market Data:** When P-states are active, the CPU frequency constantly fluctuates between base clock (e.g., 2.5 GHz) and maximum clock. If a burst of quotes arrives while the core is down-clocked, your processing throughput is cut in half until the OS governor notices the load. Disabling PSS enforces 100% deterministic clock frequency.
+
+---
+
+#### BIOS Setting 3: SMT Control (Simultaneous Multi-Threading)
+* **What it is:** SMT (AMD's term for Hyper-Threading) presents two virtual "logical cores" to the operating system for each single physical silicon core. Both virtual threads share the exact same physical execution units (ALUs, vector registers) and Level 1 / Level 2 caches.
+* **Untuned Config Value:** `[Enabled]` or `[Auto]` (16 physical cores appear as 32 threads)
+* **Tuned Config Value:** `[Disabled]` (16 physical cores appear as 16 physical cores)
+* **What Difference It Makes:** Eliminates execution resource contention and cache thrashing. Guarantees that 100% of the core's physical pipeline and 100% of the 32KB L1 data cache is dedicated exclusively to your trading process.
+* **Why It's Important for Market Data:** When SMT is enabled, if your ITCH market data thread is running on Thread 0, and a random background process (e.g., SSH daemon, cron job, OS logger) runs on Thread 1, the background process steals execution cycles and evicts your order book from the L1 cache. This produces unpredictable 5–30 µs tail latency spikes.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ SMT (HYPER-THREADING): RESOURCE SHARING vs DEDICATED SILICON             │
+├─────────────────────────────────────────────────────────────────────────┤
+│ SMT ENABLED (Untuned Default: 2 Logical Threads per Physical Core):     │
+│   Physical Core 0                                                       │
+│   ├── Logical Thread 0: [ NASDAQ ITCH Feed Parser ]                     │
+│   └── Logical Thread 1: [ Background OS Task (sshd / cron) ]            │
+│       Both threads fight for:                                           │
+│       - 32 KB L1 Data Cache (cache lines evict each other!)             │
+│       - Arithmetic Logic Units (ALUs) & Branch Predictors               │
+│       Result: Jitter spikes of 5 to 30 microseconds!                    │
+│                                                                         │
+│ SMT DISABLED (Tuned: 1 Dedicated Physical Core per Thread):              │
+│   Physical Core 0                                                       │
+│   └── Logical Thread 0: [ NASDAQ ITCH Feed Parser ]                     │
+│       ├── 100% of L1 Data Cache (32 KB dedicated)                       │
+│       ├── 100% of L2 Cache (1 MB dedicated)                             │
+│       └── 100% of physical ALUs & execution ports                       │
+│       Result: Zero contention, rock-solid determinism!                  │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### BIOS Setting 4: Core Performance Boost (CPB / Turbo Boost)
+* **What it is:** CPB (AMD's equivalent to Intel Turbo Boost) dynamically overclocks active cores above their rated base frequency when power and thermal limits permit. For example, boosting an AMD 9950X core from 4.3 GHz base up to 5.7 GHz boost.
+* **Untuned Config Value:** `[Enabled]` or `[Auto]`
+* **Tuned Config Value:** `[Disabled]` (or locked to fixed all-core multiplier in extreme overclocking)
+* **What Difference It Makes:** Eliminates frequency modulation jitter. When CPB engages or disengages, the CPU's Phase-Locked Loop (PLL) must relock clock multipliers, freezing instruction execution for several microseconds. It also avoids thermal throttling drops after prolonged bursts.
+* **Why It's Important for Market Data:** While boosting to 5.7 GHz sounds attractive, the *variation* in clock speed causes tick-to-trade latency to vary wildly depending on core temperature and how many other cores are active. Low-latency trading demands **repeatable determinism**: every packet must be processed in the exact same number of nanoseconds, morning or afternoon.
+
+---
+
+#### BIOS Setting 5: Above 4GB MMIO Limit
+* **What it is:** Memory-Mapped I/O (MMIO) assigns physical memory addresses to hardware devices (like high-speed PCIe network cards and NVMe controllers) so the CPU can communicate with them. This setting determines the address decoding width (e.g., 40-bit / 1TB).
+* **Untuned Config Value:** `[Auto]` or limited to 32-bit (under 4GB)
+* **Tuned Config Value:** `[40bit (1TB)]`
+* **What Difference It Makes:** Ensures that 64-bit PCIe network cards with large memory apertures (e.g., dual-port Intel 10GbE / 100GbE NICs with multi-gigabyte descriptor queues) can allocate their memory-mapped registers above the 4GB boundary without memory window conflicts.
+* **Why It's Important for Market Data:** Modern multi-queue trading network cards allocate extensive DMA descriptor rings and hardware packet buffers. Limiting MMIO below 4GB causes device address collisions, reduced queue allocations, or driver fallback to slow PIO modes.
+
+---
+
+#### BIOS Setting 6: IOMMU (AMD-Vi / Intel VT-d)
+* **What it is:** The Input-Output Memory Management Unit (IOMMU) is a hardware component that translates device physical addresses (DMA addresses) into system physical RAM addresses. It acts like virtual memory page tables, but for PCIe peripherals rather than CPU threads.
+* **Untuned Config Value:** `[Enabled]`
+* **Tuned Config Value:** `[Disabled]`
+* **What Difference It Makes:** When enabled, every packet DMA transaction from the NIC must pass through the IOMMU's hardware translation buffer (IOTLB). On an IOTLB miss, the hardware walks page tables in DRAM, adding **100–300 nanoseconds** to every packet write. Disabling IOMMU allows the NIC to write directly to physical memory addresses with zero translation penalty.
+* **Why It's Important for Market Data:** When a sudden volume burst hits the exchange (e.g. non-farm payroll release), hundreds of thousands of UDP multicast packets hit the NIC in milliseconds. IOTLB misses create backpressure in the PCIe controller, causing FIFO overflow drops inside the NIC. Direct physical DMA eradicates this bottleneck.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ IOMMU (AMD-Vi): DMA PACKET TRANSLATION vs DIRECT PHYSICAL ACCESS        │
+├─────────────────────────────────────────────────────────────────────────┤
+│ IOMMU ENABLED (Untuned Default - Virtualization Safety Layer):          │
+│   NIC DMA Packet ──> [ IOMMU Hardware ] ──> Physical RAM                │
+│                            │                                            │
+│                       IOTLB Miss?                                       │
+│                       CPU walks I/O Page Tables in DRAM (~150-300 ns)   │
+│                       Latency penalty on high-frequency packet bursts!  │
+│                                                                         │
+│ IOMMU DISABLED (Tuned - Direct Hardware Memory Access):                 │
+│   NIC DMA Packet ─────────────────────────> Physical RAM                │
+│               Direct PCIe DMA write: ZERO translation delay!            │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### BIOS Setting 7: Above 4G Decoding
+* **What it is:** Enables or disables 64-bit capable PCIe devices to decode memory spaces located above 4GB in the system memory map.
+* **Untuned Config Value:** `[Disabled]`
+* **Tuned Config Value:** `[Enabled]`
+* **What Difference It Makes:** Opens up the vast 64-bit memory space for peripheral devices. Required prerequisite for enabling PCIe Resizable BAR (Re-Size BAR).
+* **Why It's Important for Market Data:** High-throughput trading NICs (Intel E810, X520, Mellanox ConnectX) and FPGA accelerators require 64-bit address spaces to map their high-capacity packet ring buffers and hardware timestamping registers directly.
+
+---
+
+#### BIOS Setting 8: Re-Size BAR (Resizable Base Address Register)
+* **What it is:** Base Address Registers (BARs) define how much of a PCIe device's on-board memory the CPU can map into its own address space at one time. Historically, legacy PCIe restricted this aperture to a tiny 256 megabytes. Re-Size BAR allows the CPU to map the device's entire memory space simultaneously.
+* **Untuned Config Value:** `[Disabled]`
+* **Tuned Config Value:** `[Enabled]`
+* **What Difference It Makes:** Eliminates aperture banking. The CPU can read and write to all network card registers, descriptor queues, and on-card packet buffers in a single continuous memory operation without having to re-point aperture translation windows.
+* **Why It's Important for Market Data:** Enables ultra-low-latency direct MMIO access. When your execution engine transmits an order over an AF_XDP or kernel-bypass ring, the CPU writes the outbound descriptor directly into NIC memory across the PCIe bus in a single unfragmented instruction.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ RE-SIZE BAR: LEGACY 256MB APERTURE vs FULL APERTURE DIRECT ACCESS       │
+├─────────────────────────────────────────────────────────────────────────┤
+│ LEGACY BAR (Untuned Default: 256 MB Window):                            │
+│   CPU Memory Map: [ 256 MB Window ] <── Small view into device memory   │
+│   Accessing buffers outside 256 MB requires reprogramming BAR windows!  │
+│   Adds overhead and stall cycles during high-throughput I/O.            │
+│                                                                         │
+│ RE-SIZE BAR ENABLED (Tuned: Full Aperture Mapping):                     │
+│   CPU Memory Map: [ FULL DEVICE MEMORY MAPPED CONTINUOUSLY ]            │
+│   The entire NIC / FPGA memory space is directly accessible.            │
+│   Fast, single-cycle MMIO writes for order dispatch!                   │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### BIOS Setting 9: SR-IOV Support (Single Root I/O Virtualization)
+* **What it is:** SR-IOV allows a physical PCIe network card (Physical Function, PF) to partition its hardware resources into multiple virtual network cards (Virtual Functions, VFs).
+* **Untuned Config Value:** `[Disabled]`
+* **Tuned Config Value:** `[Enabled]`
+* **What Difference It Makes:** Prepares hardware support for virtualized queue slicing. Even on bare-metal systems, having SR-IOV enabled allows trading architects to slice hardware queues into isolated virtual endpoints if needed.
+* **Why It's Important for Market Data:** Provides flexibility to dedicate an isolated Virtual Function with its own dedicated PCIe queue directly to a specific container or thread without touching the primary management interface.
+
+---
+
+#### BIOS Setting 10: BME DMA Mitigation
+* **What it is:** Bus Master Enable (BME) allows a PCIe peripheral to initiate Direct Memory Access (DMA) transactions across the motherboard bus. BME DMA Mitigation is a security feature that forces the BIOS to revoke DMA privileges from PCIe devices during certain boot stages and System Management Interrupts (SMM).
+* **Untuned Config Value:** `[Enabled]`
+* **Tuned Config Value:** `[Disabled]`
+* **What Difference It Makes:** Disabling mitigation ensures that Bus Master DMA remains permanently enabled and active across all CPU and motherboard operating states, preventing unexpected DMA stalls.
+* **Why It's Important for Market Data:** If the firmware resets or stalls Bus Master privileges on a PCIe slot, incoming market data packets queue up in the NIC's physical buffer and are eventually dropped, causing missing tick sequence numbers and catastrophic market data recovery storms.
+
+---
+
+#### BIOS Setting 11: ASPM Support (PCIe Active State Power Management)
+* **What it is:** ASPM is a power-saving protocol for PCI Express lanes. When no data is traveling across the PCIe bus between the network card and the CPU, ASPM drops the PCIe link into lower power states (L0s and L1), reducing transceiver voltage.
+* **Untuned Config Value:** `[Auto]` or `[Enabled]`
+* **Tuned Config Value:** `[Disabled]`
+* **What Difference It Makes:** Disabling ASPM locks all PCIe lanes in the **L0 (Full Power Active)** state permanently. It prevents PCIe link transitions, eliminating the **5 to 30 microsecond link wake-up delay**.
+* **Why It's Important for Market Data:** When trading markets are quiet, no packets traverse the PCIe bus. ASPM puts the PCIe lanes to sleep. When the market moves and an exchange quote arrives, the network card cannot transfer the packet to the CPU until the PCIe physical link completes a full wake-up sequence! Disabling ASPM keeps the bus hot and ready 100% of the time.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ PCIE ASPM: LINK POWER STATES vs CONTINUOUS L0 READINESS                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│ ASPM ENABLED (Untuned Default: Powers down PCIe lanes):                 │
+│   PCIe Link State: [ L1 Low Power Sleep ]                               │
+│   1. Market data packet arrives on physical fiber ──>                   │
+│   2. NIC attempts to write packet via DMA ──>                           │
+│   3. PCIe link is sleeping! NIC sends wake-up electrical beacon         │
+│   4. PCIe link transitions L1 ──> L0s ──> L0 (5 to 30 µs delay!)        │
+│   5. Packet finally DMA transfers into host memory.                     │
+│   Total Jitter: 5 to 30 microseconds added to every quote burst!        │
+│                                                                         │
+│ ASPM DISABLED (Tuned: pcie_aspm=off):                                   │
+│   PCIe Link State: [ L0 Permanent Active State ]                        │
+│   Market data packet arrives ──> Instant DMA write to DRAM (0ns delay)! │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### BIOS Setting 12: Relaxed Ordering
+* **What it is:** Standard PCIe transactions must strictly complete in the exact sequential order they were issued (Strong Ordering). Relaxed Ordering allows the PCIe controller to reorder certain memory transactions that do not depend on each other, preventing slow read operations from blocking independent packet writes.
+* **Untuned Config Value:** `[Disabled]`
+* **Tuned Config Value:** `[Enabled]`
+* **What Difference It Makes:** Increases PCIe Transaction Layer Packet (TLP) throughput. Outbound write operations (such as order submissions or packet descriptors) do not stall waiting for unrelated reads to clear the bus.
+* **Why It's Important for Market Data:** Prevents head-of-line blocking on the PCIe bus during market bursts, ensuring incoming market data DMA writes and outbound order execution packets pass each other without contention.
+
+---
+
+#### BIOS Setting 13: No Snoop
+* **What it is:** In cache-coherent x86 architectures, whenever an external PCIe device writes data to RAM via DMA, the CPU must "snoop" its own L1/L2/L3 caches to verify if that memory address is currently cached. "No Snoop" is a PCIe attribute bit that signals the CPU that the target buffer is uncached, allowing the DMA transaction to bypass cache snooping.
+* **Untuned Config Value:** `[Disabled]`
+* **Tuned Config Value:** `[Enabled]`
+* **What Difference It Makes:** Bypasses unnecessary CPU cache snooping cycles across the Infinity Fabric or CPU interconnect for streaming DMA packet buffers, reducing memory bus latency by **15–30 nanoseconds** per transfer.
+* **Why It's Important for Market Data:** Market data packets are written once into temporary network ring buffers (UMEM or sk_buff). Bypassing cache snooping accelerates the hardware DMA transfer into RAM, allowing your parser thread to read the packet immediately.
+
+---
+
+### 5. Post-Boot Linux Verification Commands
 
 After booting into Linux, execute these commands to verify that BIOS settings applied successfully:
 
@@ -752,7 +967,7 @@ For modern Linux distributions (AlmaLinux 10 / RHEL 10 / Ubuntu 24.04, kernel 6.
 isolcpus=domain,nohz,1-15 nohz=on nohz_full=1-15 rcu_nocbs=1-15 rcupdate.rcu_normal_after_boot=1 skew_tick=1 preempt=full nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=2M hugepages=2048 pcie_aspm=off mitigations=off
 ```
 
-### Parameter Breakdown & Architectural Rationale
+### 1. Parameter Breakdown Summary Matrix
 
 | Category | Boot Parameter | Functional Goal / Low-Latency Rationale |
 | :--- | :--- | :--- |
@@ -774,7 +989,256 @@ isolcpus=domain,nohz,1-15 nohz=on nohz_full=1-15 rcu_nocbs=1-15 rcupdate.rcu_nor
 
 ---
 
-### ⚠️ Post-Mortem: Dangerous Parameters to AVOID on Production Bare-Metal
+### 2. Comprehensive Deep Dive: Every Kernel Boot Parameter Explained
+
+Kernel boot parameters (passed via GRUB / systemd-boot to `/proc/cmdline`) configure the low-level behavior of the Linux kernel during early bootstrap. Below is an exhaustive breakdown of **all 15 kernel command-line parameters**, explaining what they do, why the Linux default behaves the way it does, and how our tuning achieves deterministic nanosecond performance.
+
+---
+
+#### Boot Parameter 1: `isolcpus=domain,nohz,1-15`
+* **What it is:** Instructs the Linux Completely Fair Scheduler (CFS) to isolate the specified list of CPU cores (Cores 1 through 15) from standard process load-balancing domains. Core 0 is intentionally left unisolated as the "housekeeping core".
+* **Untuned Config Value:** *(Not set / Empty)* — All cores participate in scheduler load balancing.
+* **Tuned Config Value:** `isolcpus=domain,nohz,1-15`
+* **What Difference It Makes:** Standard Linux dynamically balances running processes across all cores. If an unpinned background process or cron job wakes up, the scheduler will happily place it on your trading core. `isolcpus` completely removes Cores 1–15 from the scheduler's automatic work queue. No process can execute on Cores 1–15 unless explicitly pinned there via `taskset`, `numactl`, or `pthread_setaffinity_np()`.
+* **Why It's Important for Market Data:** Guarantees that your market data parsers, order book builders, and execution gateways run with 100% exclusivity on physical silicon. No random background OS daemon can preempt your trading loop.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ CORE PARTITIONING: HOUSEKEEPING CORE vs ISOLATED TRADING CORES          │
+├─────────────────────────────────────────────────────────────────────────┤
+│ Core 0 (HOUSEKEEPING CORE - Unisolated):                                │
+│   Runs: Linux kernel workers, systemd, sshd, rsyslog, cron, disk I/O,   │
+│         peripheral hardware IRQs, RCU garbage collection callbacks.     │
+│                                                                         │
+│ Cores 1 to 15 (ISOLATED TRADING CORES - isolcpus):                      │
+│   • Removed from CFS scheduler balancing domains                        │
+│   • Zero background processes allowed to run here                       │
+│   • Only your explicitly pinned trading threads run on these cores:     │
+│     - Core 1: ITCH Multicast Feed Handler                               │
+│     - Core 2: Level 2 / Level 3 Order Book Engine                       │
+│     - Core 3: Quantitative Alpha Strategy Loop                          │
+│     - Core 4: OUCH / FIX Order Execution Gateway                        │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Boot Parameter 2: `nohz=on`
+* **What it is:** Enables the generic dynamic tick subsystem infrastructure within the Linux kernel, paving the way for full tickless core isolation.
+* **Untuned Config Value:** `nohz=on` (or distribution default)
+* **Tuned Config Value:** `nohz=on`
+* **What Difference It Makes:** Initializes kernel high-resolution timer (hrtimer) support required for adaptive tickless execution.
+* **Why It's Important for Market Data:** Required baseline dependency for `nohz_full` to operate correctly.
+
+---
+
+#### Boot Parameter 3: `nohz_full=1-15`
+* **What it is:** Adaptive Tickless Mode (Full dynticks). By default, the Linux kernel fires a hardware timer interrupt (the "scheduler tick") at 1000 Hz (1,000 times per second, or once every 1 millisecond) on EVERY core. `nohz_full` disables this 1000 Hz timer tick on Cores 1–15 whenever there is only 1 runnable task on that core.
+* **Untuned Config Value:** *(Not set)* — 1000 Hz timer tick fires continuously on every core.
+* **Tuned Config Value:** `nohz_full=1-15`
+* **What Difference It Makes:** Eradicates 1,000 timer interrupts per second per core! When your trading thread is spinning in an active poll loop on Core 1, the kernel completely stops scheduling timer ticks to that core. Execution becomes completely continuous.
+* **Why It's Important for Market Data:** Every timer interrupt forces the CPU to pause your user-space market data loop, save CPU registers to the stack, switch to kernel mode, update process accounting statistics, and switch back. That takes **1 to 3 microseconds** 1,000 times a second! If a quote packet arrives during that 3 µs pause, you miss the market update.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ NOHZ_FULL: 1000 HZ SCHEDULER TICK vs TICKLESS TRADING CORE              │
+├─────────────────────────────────────────────────────────────────────────┤
+│ UNTUNED (Default 1000 Hz Scheduler Tick):                               │
+│ Time:   0ms      1ms      2ms      3ms      4ms      5ms                │
+│ Core 1: ─[TICK]───[TICK]───[TICK]───[TICK]───[TICK]───[TICK]───         │
+│          ▲                                                              │
+│          └── Every [TICK] is a 1-3 µs interrupt pause!                  │
+│              60,000 interruptions every minute on your trading thread!  │
+│                                                                         │
+│ TUNED (nohz_full=1-15 on isolated core with 1 task):                    │
+│ Time:   0ms      1ms      2ms      3ms      4ms      5ms                │
+│ Core 1: ─────────────────────────────────────────────────────────────── │
+│          ZERO timer interrupts! Pure continuous nanosecond execution.   │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Boot Parameter 4: `rcu_nocbs=1-15`
+* **What it is:** RCU (Read-Copy-Update) is a lockless synchronization mechanism used throughout the Linux kernel. When kernel data structures are freed, their memory deallocation is deferred into "RCU callbacks". By default, the core that triggered the RCU operation executes its own callbacks. `rcu_nocbs` offloads all RCU callback processing away from Cores 1–15 to housekeeping Core 0.
+* **Untuned Config Value:** *(Not set)* — Every core processes its own RCU garbage collection.
+* **Tuned Config Value:** `rcu_nocbs=1-15`
+* **What Difference It Makes:** Prevents RCU callback "ksoftirqd" and "rcuc" worker threads from waking up on your trading cores. The trading cores remain completely free of kernel garbage collection overhead.
+* **Why It's Important for Market Data:** RCU callbacks can accumulate and fire in bursts, stalling a trading core for **10 to 50 microseconds** while freeing memory buffers from other parts of the system. Offloading them guarantees the trading core never halts.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ RCU CALLBACK OFFLOADING: rcu_nocbs=1-15                                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│ UNTUNED (Default - RCU Callbacks run on local core):                    │
+│   Core 1: [Trading Algo] ──>[RCU Garbage Collection Stall: 20µs]──>[Algo]│
+│                              ▲ Stalls your market data processing!      │
+│                                                                         │
+│ TUNED (rcu_nocbs=1-15 - Callbacks offloaded to Core 0):                 │
+│   Core 1: [Trading Algo]───────────────────────────────────────>[Algo]  │
+│           (100% uninterrupted uninterrupted order book processing)      │
+│                                                                         │
+│   Core 0: ──>[Processes All Deferred RCU Callbacks in Background]────── │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Boot Parameter 5: `rcupdate.rcu_normal_after_boot=1`
+* **What it is:** During early system boot, Linux uses "expedited" RCU grace periods to boot quickly, which generates heavy cross-core IPIs (Inter-Processor Interrupts). Setting this parameter instructs the kernel to immediately transition back to normal, gentle RCU behavior as soon as system initialization completes.
+* **Untuned Config Value:** `0` (or dynamic)
+* **Tuned Config Value:** `1`
+* **What Difference It Makes:** Prevents expedited RCU grace periods from sending synchronous IPI interrupts to isolated trading cores at runtime.
+* **Why It's Important for Market Data:** Eliminates cross-core interrupt storms that disrupt latency-critical execution loops.
+
+---
+
+#### Boot Parameter 6: `skew_tick=1`
+* **What it is:** On multi-core systems, timer interrupts naturally tend to synchronize over time, causing all cores to execute timer handlers at the exact same instant. `skew_tick=1` intentionally offsets the timer tick phase across cores.
+* **Untuned Config Value:** `0` (Synchronized ticks)
+* **Tuned Config Value:** `1` (Desynchronized / Skewed ticks)
+* **What Difference It Makes:** Prevents simultaneous memory bus collisions. If all cores hit memory at the exact same cycle, memory controller queues saturate.
+* **Why It's Important for Market Data:** Ensures that housekeeping timer activity on Core 0 does not contend for DRAM bus channels at the exact moment your trading cores are reading market data packets from memory.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ SKEW_TICK: DESYNCHRONIZING MEMORY BUS STAMPEDES                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│ SKEW_TICK=0 (Untuned: All cores hit bus simultaneously):                │
+│   Core 0 Timer: ───[TICK]────────────────────────                       │
+│   Core 1 Timer: ───[TICK]────────────────────────                       │
+│   Core 2 Timer: ───[TICK]────────────────────────                       │
+│   Memory Bus:   ═══[COLLISION / STAMPEDE]════════ <── Memory latency spike!
+│                                                                         │
+│ SKEW_TICK=1 (Tuned: Ticks are staggered in time):                       │
+│   Core 0 Timer: ───[TICK]────────────────────────                       │
+│   Core 1 Timer: ───────────[TICK]────────────────                       │
+│   Core 2 Timer: ────────────────────[TICK]───────                       │
+│   Memory Bus:   Smooth, distributed access with zero bus contention.    │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Boot Parameter 7: `preempt=full`
+* **What it is:** Sets the Linux kernel preemption model to `PREEMPT_DYNAMIC` Full Preemption. Standard enterprise Linux kernels run with `preempt=voluntary` or `preempt=none`, where the kernel cannot be interrupted while executing system calls on behalf of a process.
+* **Untuned Config Value:** `preempt=voluntary` (or `preempt=none`)
+* **Tuned Config Value:** `preempt=full`
+* **What Difference It Makes:** Makes virtually all kernel code paths preemptible. If a high-priority trading thread needs CPU time while the kernel is performing a low-priority task, the kernel yields execution in **under 2 microseconds** instead of waiting for a voluntary scheduling point (which can take up to 150 µs).
+* **Why It's Important for Market Data:** Slashing scheduler wake-up tail latency. When cyclictest measures real-time dispatch, `preempt=full` reduces the 99.99th percentile wake-up tail from **146 µs down to 11 µs**.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ KERNEL PREEMPTION: VOLUNTARY vs FULL PREEMPTION                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│ VOLUNTARY PREEMPTION (Untuned Default):                                 │
+│   Low-prio task in kernel syscall ─────────────────────────> [Yield]    │
+│                         ▲                                        ▲      │
+│                         │ Market Packet arrives!                 │      │
+│                         └── High-priority trading task waits! ───┘      │
+│                         Worst-case delay: 50 to 150 microseconds!       │
+│                                                                         │
+│ FULL PREEMPTION (Tuned: preempt=full):                                  │
+│   Low-prio task in kernel syscall ───> [FORCED PREEMPTION]              │
+│                         ▲                     │                         │
+│                         │ Market arrives!     ▼                         │
+│                         └── Trading task runs immediately! (<2 µs)      │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Boot Parameter 8: `nosmt`
+* **What it is:** Kernel-level directive to disable Simultaneous Multi-Threading (Hyper-Threading).
+* **Untuned Config Value:** *(Not set)* — SMT enabled.
+* **Tuned Config Value:** `nosmt`
+* **What Difference It Makes:** Even if SMT is enabled in BIOS by accident, the kernel shuts down all sibling sibling threads during early boot, presenting only true physical cores to user space.
+* **Why It's Important for Market Data:** Guarantees that every CPU core index (0, 1, 2...) represents a distinct physical silicon core with dedicated L1 cache and execution pipeline.
+
+---
+
+#### Boot Parameter 9: `audit=0`
+* **What it is:** Disables the Linux kernel auditing subsystem (`kauditd`). In enterprise servers, the audit daemon logs security-relevant system calls (like `execve`, `socket`, `connect`).
+* **Untuned Config Value:** `audit=1`
+* **Tuned Config Value:** `audit=0`
+* **What Difference It Makes:** Completely disables the audit hook from the kernel's system call entry and exit path, saving **20 to 40 nanoseconds** on every single system call.
+* **Why It's Important for Market Data:** High-speed trading applications perform millions of socket and timer operations per second. Removing audit overhead speeds up every socket call across the board.
+
+---
+
+#### Boot Parameter 10: `mce=ignore_ce`
+* **What it is:** Machine Check Exceptions (MCE) are hardware-level alerts reported by CPU hardware when correctable errors (CE) occur (such as single-bit ECC RAM errors). By default, the kernel halts the CPU core to record details in the system event log.
+* **Untuned Config Value:** *(Not set)* — Logs correctable errors synchronously.
+* **Tuned Config Value:** `mce=ignore_ce`
+* **What Difference It Makes:** Tells the kernel to ignore correctable memory errors instead of triggering a synchronous execution stall. (Uncorrectable fatal errors still trigger a safe kernel panic).
+* **Why It's Important for Market Data:** Prevents unexpected multi-millisecond CPU freezes during market trading hours if an ECC DIMM experiences a harmless, transparently corrected single-bit memory flip.
+
+---
+
+#### Boot Parameter 11: `transparent_hugepage=never`
+* **What it is:** Disables the kernel's runtime Transparent Hugepage (THP) allocator during early bootstrap.
+* **Untuned Config Value:** `transparent_hugepage=always` or `madvise`
+* **Tuned Config Value:** `transparent_hugepage=never`
+* **What Difference It Makes:** Prevents the kernel's background memory defragmentation thread (`khugepaged`) from running. When THP is active, the kernel periodically scans memory to coalesce 4KB pages into 2MB blocks, causing catastrophic 10–100ms allocation freezes.
+* **Why It's Important for Market Data:** Eliminates unpredictable latency spikes during order book allocations. Low-latency systems use **static hugepages** (pre-allocated at boot) instead of dynamic THP.
+
+---
+
+#### Boot Parameter 12: `default_hugepagesz=2M`
+* **What it is:** Sets the system's default hugepage architecture size to 2 Megabytes (2MB).
+* **Untuned Config Value:** 4KB (standard page size)
+* **Tuned Config Value:** `default_hugepagesz=2M`
+* **What Difference It Makes:** Configures the default hugepage mount `/dev/hugepages` to use 2MB pages. 2MB hugepages use a 3-level page table instead of 4-level, fitting comfortably into CPU Translation Lookaside Buffers (TLBs).
+* **Why It's Important for Market Data:** Standard 4KB pages require 4,096 page table entries for a 16MB order book. 2MB hugepages require only 8 entries! Those 8 entries reside permanently in L1 D-TLB, eliminating page table walk stalls.
+
+---
+
+#### Boot Parameter 13: `hugepages=2048`
+* **What it is:** Pre-allocates exactly 2,048 contiguous 2MB hugepages (totaling 4 Gigabytes of physical RAM) during early boot, before the memory space becomes fragmented by the operating system.
+* **Untuned Config Value:** `0` (no pre-allocated hugepages)
+* **Tuned Config Value:** `hugepages=2048` (4GB pool)
+* **What Difference It Makes:** Guarantees that 4GB of physical DRAM is locked, unswappable, and physically contiguous. Your application can map these pages via `mmap(MAP_HUGETLB)` with 0% chance of allocation failure or fragmentation stalls.
+* **Why It's Important for Market Data:** Used for pre-allocating the primary memory pool: AF_XDP packet UMEM rings, L2/L3 order book depth queues, and lock-free SPSC circular ring buffers.
+
+---
+
+#### Boot Parameter 14: `pcie_aspm=off`
+* **What it is:** Kernel-level command to force the PCIe subsystem to ignore Active State Power Management (ASPM) requests from devices.
+* **Untuned Config Value:** `pcie_aspm=default` (allows driver power savings)
+* **Tuned Config Value:** `pcie_aspm=off`
+* **What Difference It Makes:** Overrides device drivers that attempt to put PCIe links into low-power states (L0s/L1). Guarantees PCIe interconnects stay locked in L0 active mode.
+* **Why It's Important for Market Data:** Prevents PCIe link wake-up delays (5–30 µs) on trading network cards during quiet market intervals.
+
+---
+
+#### Boot Parameter 15: `mitigations=off`
+* **What it is:** Disables all CPU hardware vulnerability software mitigations (Meltdown, Spectre v1/v2, MDS, L1TF, Retpoline, Speculative Store Bypass).
+* **Untuned Config Value:** `mitigations=auto` (All software barriers active)
+* **Tuned Config Value:** `mitigations=off`
+* **What Difference It Makes:** Strips indirect branch predictors, retpolines, and memory barrier fences (`lfence`, IBRS, IBPB) from every system call and context switch. Restores **15% to 30% raw CPU throughput** and cuts syscall overhead by **30–50 nanoseconds**.
+* **Why It's Important for Market Data:** Electronic trading servers operate on private, dedicated colocation networks where untrusted multi-tenant code is never executed. Bearing the massive latency penalty of speculative execution fences is counterproductive; disabling them restores the silicon's native bare-metal execution speed.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ CPU SPECULATIVE EXECUTION BARRIERS: MITIGATIONS=AUTO vs OFF             │
+├─────────────────────────────────────────────────────────────────────────┤
+│ MITIGATIONS=AUTO (Untuned Default):                                     │
+│   Every system call, context switch, and indirect function call issues: │
+│   - Retpoline thunks                                                    │
+│   - Indirect Branch Prediction Barriers (IBPB)                          │
+│   - CPU pipeline serialization fences                                   │
+│   Performance Cost: +30 to 50 nanoseconds added to every system call!   │
+│                                                                         │
+│ MITIGATIONS=OFF (Tuned for Dedicated Production Trading Servers):       │
+│   • All software speculative barriers DISABLED                          │
+│   • Branch predictors execute at full silicon wire speed                │
+│   • Minimal syscall latency drops from ~90ns to ~60ns!                  │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 3. ⚠️ Post-Mortem: Dangerous Parameters to AVOID on Production Bare-Metal
 
 Previous iterations and common internet tuning guides often recommend parameters that are catastrophic on modern multi-queue NVMe / enterprise server hardware. **DO NOT USE** the following parameters:
 
@@ -897,63 +1361,7 @@ Host trading-srv01
 
 ---
 
-## 🧪 Simulation Environment Setup (AlmaLinux 10 on KVM)
-
-To validate scripts, AF_XDP ring buffers, and sysctl routines before deploying to live hardware, a fully automated KVM simulation is included.
-
-### Launching and Managing the Simulation VM
-```bash
-cd simulation
-./setup_simulation.sh create   # Spin up fresh AlmaLinux 10 VM (~10s)
-./setup_simulation.sh status   # Check VM run state and assigned IP
-./setup_simulation.sh ssh      # Log directly into the running VM
-./setup_simulation.sh sync     # Pull benchmark results into local ./results/
-./setup_simulation.sh destroy  # Tear down VM and erase temporary disk
-```
-
-### ⚡ One-Shot Simulation Recreation & Automated Provisioning (`recreate_simulation.sh`)
-
-For a completely automated, zero-touch tear-down and rebuild of the AlmaLinux simulation environment, use [`recreate_simulation.sh`](file:///home/neville/hft/recreate_simulation.sh). It chains the entire lifecycle into a single pipeline:
-
-```bash
-# Interactive mode (prompts for confirmation before destroying):
-./recreate_simulation.sh
-
-# Headless / Unattended mode (auto-confirms teardown):
-./recreate_simulation.sh -y
-```
-
-#### What the Recreate Pipeline Automates:
-1. **VM Teardown**: Calls `setup_simulation.sh destroy` to terminate `hft-alma`, undefine the domain, and erase the temporary copy-on-write disk overlay.
-2. **Pristine Rebuild**: Calls `setup_simulation.sh create` to spin up a fresh AlmaLinux 10 VM from base image with host CPU/cache passthrough and cloud-init SSH injection.
-3. **Remote Server Toolchain Provisioning**: Runs [`setup_remote_server.sh`](file:///home/neville/hft/setup_remote_server.sh) to:
-   - Synchronize local SSH credentials so the VM can pull from private Git repositories.
-   - Enable AlmaLinux CRB (CodeReady Linux Builder) and EPEL package repositories.
-   - Install C/C++ compiler toolchains (`gcc`, `g++`, `make`, `cmake`), low-latency kernel bypass packages (`libxdp`, `libbpf`), profiling tools (`perf`, `numactl`, `cyclictest`), and download utilities (`wget`, `curl`).
-   - Authenticate with GitHub and clone `git@github.com:wazzuck/hft.git` to `~/hft`.
-   - Clone `git@github.com:wazzuck/vunderland.git` to `~/vunderland` and execute `vunderland/settings/setup.sh` (provisions micromamba, Python base environment, Rust toolchain, and developer dotfiles).
-   - Configure master latency tuning engine strictly in `~/hft/hft_tuning.sh`.
-4. **Environment Setup & AGY CLI Installation**: Connects to the VM over SSH and executes [`install.sh`](file:///home/neville/hft/install.sh):
-   - Installs `tmux`, `git`, `curl`, and `ca-certificates`.
-   - Downloads and installs the **Google Antigravity CLI (`agy`)** via its official bootstrapper.
-   - Configures `PATH` persistence in `~/.bashrc`.
-5. **Post-Setup Health Verification**: Validates operating system version, `git`, `tmux`, `agy`, `hft` repo, `vunderland` repo, micromamba, and Rust toolchain on the VM, confirming it is fully ready for low-latency tuning experiments.
-
----
-
-### Simulation Specifics
-- **OS**: AlmaLinux 10 (GenericCloud QCOW2 image)
-- **Networking**: Bridged NAT with static IP (`192.168.122.210`)
-- **Cloud-Init**: Injects local SSH keys and provisions user `neville` with passwordless sudo.
-- **SSH Alias**: Connect instantly via `ssh hft-sim`.
-
-> [!NOTE]
-> **Virtual Machine vs. Bare-Metal Latency:**
-> In KVM, hypervisor preemption ("steal time") and virtual clock emulation (`kvm-clock`) introduce millisecond-scale jitter spikes. The VM exists to test **code correctness, build pipelines, and AF_XDP descriptor rings** safely without risking live trading systems.
-
----
-
-## ⚡ The Top 13 Runtime Kernel & OS Tunings
+## ⚡ Runtime Kernel & OS Tunings
 
 These 13 configurations are applied at runtime by [`hft_tuning.sh`](file:///home/neville/hft/hft_tuning.sh) without requiring a system reboot:
 
@@ -975,6 +1383,261 @@ These 13 configurations are applied at runtime by [`hft_tuning.sh`](file:///home
 
 > [!NOTE]
 > **\*Note on Automatic NUMA Balancing:** On enterprise multi-NUMA server platforms, disabling NUMA balancing stops background thread page migration stalls across sockets. On high-frequency single-NUMA AMD Ryzen architectures, this is not strictly required as memory access is already uniform (UMA), though retaining the setting remains recommended practice to eliminate background kernel scanning threads.
+
+### Comprehensive Deep Dive: Every Runtime Tuning Explained
+
+The 13 runtime configurations applied by [`hft_tuning.sh`](hft_tuning.sh) take effect immediately without requiring a system reboot. Below is an exhaustive breakdown of **every single runtime tuning**, explaining what it does, the standard untuned Linux behavior, the tuned value, and why it is indispensable for market data ingestion and order execution.
+
+---
+
+#### Tuning 1: CPU Scaling Governor (`performance`) & Min Frequency Pinning
+* **What it is:** The Linux `cpufreq` subsystem manages CPU clock speeds using software governors. By default, Linux runs the `powersave` or `schedutil` governor, which constantly monitors CPU utilization and dynamically shifts clock frequencies between energy-efficient low frequencies and peak boost clocks.
+* **Untuned Config Value:** `governor = powersave` (or `schedutil`), `scaling_min_freq = 400 MHz` to `2.2 GHz`
+* **Tuned Config Value:** `cpupower frequency-set -g performance`, `scaling_min_freq = scaling_max_freq`
+* **What Difference It Makes:** Under `powersave`, when market activity is quiet, the core drops down to 2.2 GHz. When an exchange quote burst arrives, the governor takes **10 to 50 milliseconds** to detect the spike and ramp up the clock multipliers. Locking the governor to `performance` and clamping the minimum frequency to the maximum frequency ensures the CPU is permanently running at maximum clock speed with **0ns ramp-up latency**.
+* **Why It's Important for Market Data:** Market data quotes arrive in sudden, unpredictable microsecond bursts. If the CPU core is running at low frequency when the burst hits, your parser takes twice as long to process each packet, causing packets to queue up in NIC memory buffers and creating severe processing lag.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ CPU FREQUENCY GOVERNORS: IDLE RAMP DELAY vs FIXED PERFORMANCE           │
+├─────────────────────────────────────────────────────────────────────────┤
+│ POWERSAVE / SCHEDUTIL GOVERNOR (Untuned Default):                       │
+│ Freq: 5.7 GHz ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─╱─────────── │
+│       4.0 GHz ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ╱              │
+│       2.2 GHz ─────────────────────────────────────────╱  10-50ms ramp! │
+│               └───────────────────────┬────────────────┘                │
+│                                       │ Burst arrives                   │
+│                                       │ (Core throttled at low freq!)   │
+│                                                                         │
+│ PERFORMANCE GOVERNOR (Tuned: min_freq = max_freq):                      │
+│ Freq: 5.7 GHz ═════════════════════════════════════════════════════════ │
+│               Core is ALWAYS at peak frequency. 0ns ramp latency!       │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Tuning 2: PM QoS C-State Elimination (`/dev/cpu_dma_latency = 0`)
+* **What it is:** Linux Power Management Quality of Service (PM QoS) allows processes to register system performance requirements with the kernel. Opening the character device `/dev/cpu_dma_latency` and writing a 32-bit integer of `0` tells the CPU power management driver that the system can tolerate **zero microseconds** of exit latency from sleep states.
+* **Untuned Config Value:** Not requested; CPU cores enter C1E, C3, C6 sleep states freely.
+* **Tuned Config Value:** Open `/dev/cpu_dma_latency`, write `int32_t = 0`, hold open indefinitely via systemd service `hft-dma-latency.service`.
+* **What Difference It Makes:** Even when the CPU has no immediate work, PM QoS forbids the hardware from entering any idle state deeper than active C0 polling. It cuts core wake-up latency from **50–150 microseconds to exactly 0 nanoseconds**.
+* **Why It's Important for Market Data:** When cyclictest measures timer wake-up latency, C-state sleep is the single largest contributor to latency spikes. In our live benchmark runs on `cherry`, eliminating C-states slashed peak wake-up latency tail from **146,771 ns down to 11,396 ns (a 92.2% reduction!)**.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ PM QOS C-STATE LOCK (/dev/cpu_dma_latency = 0)                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│ UNTUNED (No PM QoS Lock):                                               │
+│ Quiet millisecond between orders ──> Core drops into C6 sleep           │
+│ Market order arrives on wire ──> Core takes 150 µs to power on and wake │
+│ Result: Massive 150 µs latency spike on the first packet of every burst!│
+│                                                                         │
+│ TUNED (PM QoS Locked to 0 µs):                                          │
+│ Quiet millisecond between orders ──> Core spins actively in C0          │
+│ Market order arrives on wire ──> Instant processing in 0 nanoseconds!   │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Tuning 3: CFS Task Migration Cost (`sched_migration_cost_ns = 5000000`)
+* **What it is:** Instructs the Completely Fair Scheduler (CFS) on how long a task should be considered "cache hot" after it stops running on a core. The default kernel setting is 500,000 nanoseconds (0.5 ms).
+* **Untuned Config Value:** `500000` (0.5 milliseconds)
+* **Tuned Config Value:** `5000000` (5.0 milliseconds)
+* **What Difference It Makes:** Increases the migration penalty threshold by 10x. The kernel scheduler will refuse to migrate your running trading thread to a different core unless the target core has been idle for at least 5ms.
+* **Why It's Important for Market Data:** When an execution thread migrates between cores, it loses all its hot Level 1 and Level 2 CPU caches. A 16MB order book and symbol lookup table must be completely re-fetched from Level 3 cache or main DRAM, costing **10 to 50 microseconds** of degraded throughput. High migration cost enforces strict cache affinity.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ CFS TASK MIGRATION: CACHE DESTRUCTION vs CACHE RETENTION                │
+├─────────────────────────────────────────────────────────────────────────┤
+│ DEFAULT (migration_cost_ns = 500000):                                   │
+│ Core 1 (Your Algo): Hot L1/L2 caches (Order books, symbol index)        │
+│ Core 5 becomes idle ──> CFS steals thread from Core 1 to Core 5!        │
+│ Result: Core 5 has COLD caches. Order book must reload from RAM (50µs)! │
+│                                                                         │
+│ TUNED (migration_cost_ns = 5000000):                                    │
+│ CFS sees the thread is cache-hot and refuses to move it.                │
+│ Result: Your thread stays on Core 1; L1/L2 caches remain hot!           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Tuning 4: Automatic NUMA Balancing (`kernel.numa_balancing = 0`)*
+* **What it is:** In multi-socket or multi-die enterprise servers (e.g. AMD EPYC, Intel Xeon, Threadripper PRO), the kernel's automatic NUMA balancer periodically runs a background thread (`task_numa_work`). This thread intentionally invalidates page table entries to force minor page faults, tracking which CPU core touches the memory so it can migrate the physical pages across sockets.
+* **Untuned Config Value:** `1` (Enabled)
+* **Tuned Config Value:** `0` (Disabled)
+* **What Difference It Makes:** Stops the background page scanner completely. Disabling it prevents random minor page fault interruptions and cross-socket page copying stalls.
+* **Why It's Important for Market Data:** Minor page faults induced by NUMA balancing freeze application threads for **5 to 50 microseconds**. In an HFT application, you explicitly bind your threads and memory buffers to the specific NUMA node adjacent to the trading NIC using `numactl` or `pthread_setaffinity_np()`. You never want the OS moving memory behind your back.
+* *\*Note: On single-socket AMD Ryzen desktop architectures (which operate as a single uniform memory domain), this setting is not strictly necessary for memory locality, but remains essential practice to eliminate the background scanning thread.*
+
+---
+
+#### Tuning 5: Virtual Memory Swappiness & Emergency Reserve
+* **What it is:** 
+  1. `vm.swappiness`: Controls how aggressively the kernel swaps application memory pages from physical RAM to swap disk space when caching filesystem data.
+  2. `vm.min_free_kbytes`: Sets the minimum amount of physical memory that the kernel keeps free at all times as an emergency pool for non-blocking atomic allocations (like network interrupt packet reception).
+* **Untuned Config Value:** `vm.swappiness = 60`, `vm.min_free_kbytes = ~67584` (64 MB)
+* **Tuned Config Value:** `vm.swappiness = 0`, `vm.min_free_kbytes = 1048576` (1 Gigabyte emergency reserve)
+* **What Difference It Makes:**
+  - `swappiness=0` strictly prevents the kernel from swapping trading application heap, stack, or order books out to SSD/disk.
+  - `min_free_kbytes=1GB` guarantees that the kernel always has a 1GB contiguous physical pool. The kernel will **never enter "direct reclaim"** (a synchronous stall where the kernel freezes running applications while it desperately searches for free RAM pages).
+* **Why It's Important for Market Data:** Direct memory reclaim is one of the most vicious causes of multi-millisecond tail latency spikes. When sudden gigabit multicast packet storms hit the network card, standard Linux exhausts its tiny 64MB emergency pool and freezes for 10–50ms to reclaim pages, dropping thousands of packets. Reserving 1GB prevents this completely.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ DIRECT RECLAIM FREEZES vs 1GB EMERGENCY MEMORY RESERVE                  │
+├─────────────────────────────────────────────────────────────────────────┤
+│ UNTUNED (min_free_kbytes = 64MB):                                       │
+│ Massive market burst arrives ──> 100,000 UDP packets arrive in 10ms     │
+│ 64MB buffer exhausted! ──> Kernel enters [ DIRECT RECLAIM ]             │
+│   └── Kernel FREEZES your trading process for 10-50 milliseconds!       │
+│   └── Thousands of market data packets are dropped on the wire!         │
+│                                                                         │
+│ TUNED (min_free_kbytes = 1GB reserve):                                  │
+│ Massive market burst arrives ──> Packets allocated from 1GB reserve     │
+│ Zero direct reclaim. Zero pauses. Zero dropped packets!                 │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Tuning 6: VM Stat Timer Interruption Suppression (`vm.stat_interval = 120`)
+* **What it is:** The Linux virtual memory subsystem collects system-wide memory usage statistics (like page counts, active/inactive lists) by running `vmstat_update()` via a per-CPU kernel timer tick.
+* **Untuned Config Value:** `1` (Every 1 second)
+* **Tuned Config Value:** `120` (Every 2 minutes)
+* **What Difference It Makes:** Extends the statistics timer interval by 120x. Slashes periodic vmstat timer interruptions by **99.2%**.
+* **Why It's Important for Market Data:** Out of the box, standard Linux interrupts every single core once every second just to update accounting stats in `/proc/meminfo`. That's 60 interruptions per minute! Changing the interval to 120 seconds reduces the interruptions from 60 per minute down to 0.5 per minute.
+
+---
+
+#### Tuning 7: Transparent Hugepages Hard-Disable (`transparent_hugepage = never`)
+* **What it is:** Transparent Huge Pages (THP) is an automatic operating system feature that attempts to scan memory in the background via the `khugepaged` daemon and collapse contiguous 4KB pages into 2MB hugepages on the fly.
+* **Untuned Config Value:** `always` or `madvise`
+* **Tuned Config Value:** `never` (in both `enabled` and `defrag`)
+* **What Difference It Makes:** Stops `khugepaged` completely. When memory becomes fragmented, THP triggers synchronous page compaction during memory allocation, causing execution stalls of **10 to 100 milliseconds**.
+* **Why It's Important for Market Data:** Never rely on the operating system to dynamically create hugepages at runtime. HFT architectures pre-allocate **static hugepages** at boot time (via hugetlbfs), guaranteeing unfragmented 2MB physical pages without risking dynamic compaction stalls.
+
+---
+
+#### Tuning 8: Socket Low-Latency Busy-Polling, Ring & Qdisc
+* **What it is:** 
+  1. `net.core.busy_poll` & `busy_read`: Instructs the Linux socket layer to actively spin-poll the network device driver queue for incoming packets for up to $N$ microseconds before sleeping and waiting for a hardware interrupt.
+  2. `net.core.default_qdisc`: Sets the root queuing discipline for network transmission. Standard Linux uses `fq_codel` (Fair Queueing with Controlled Delay), which adds complex hashing, timestamping, and queue sojourn management. We replace it with `pfifo_fast`, a lockless, ultra-fast First-In-First-Out queue.
+  3. `ethtool -G rx 1024/4096`: Expands the physical hardware descriptor rings on the network card to absorb packet bursts.
+* **Untuned Config Value:** `busy_poll = 0` (Interrupt-driven), `qdisc = fq_codel`, `rx ring = 256/512`
+* **Tuned Config Value:** `busy_poll = 50`, `busy_read = 50`, `default_qdisc = pfifo_fast`, `rx ring = 1024` (or `4096` on 100GbE)
+* **What Difference It Makes:**
+  - Socket reads become active polling loops: when a packet arrives, your application reads it in **nanoseconds**, avoiding the 3–8 µs interrupt dispatch delay.
+  - `pfifo_fast` eliminates **300–800 nanoseconds** of transmission packet scheduling overhead.
+  - Expanded ring buffers prevent packet drops during microbursts.
+* **Why It's Important for Market Data:** When processing live exchange feeds, busy-polling eliminates the sleep-and-wake cycle of socket `recv()`, ensuring you react to price updates immediately.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ SOCKET BUSY-POLLING vs INTERRUPT-DRIVEN RECEPTION                       │
+├─────────────────────────────────────────────────────────────────────────┤
+│ INTERRUPT-DRIVEN (Untuned: busy_poll = 0):                              │
+│ App calls recv() ──> No packet yet ──> Thread goes to sleep             │
+│ Packet arrives at NIC ──> NIC raises electrical IRQ ──> CPU halts       │
+│ CPU runs kernel ISR ──> Wakes up app thread ──> App reads packet        │
+│ Total Delay: 3,000 to 8,000 nanoseconds!                                │
+│                                                                         │
+│ BUSY-POLLING (Tuned: busy_poll = 50us):                                 │
+│ App calls recv() ──> CPU actively spins polling the NIC ring            │
+│ Packet arrives at NIC ──> Read IMMEDIATELY from memory!                 │
+│ Total Delay: Sub-microsecond!                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Tuning 9: TCP Serialization & Metrics (Autocorking & Idle Reset)
+* **What it is:**
+  1. `tcp_autocorking = 0`: Disables Linux TCP packet coalescing. By default, Linux holds back small TCP packets hoping that the application will quickly write more data, merging them into a single packet to maximize bandwidth efficiency.
+  2. `tcp_slow_start_after_idle = 0`: Disables TCP congestion window reset after idle periods.
+  3. `tcp_no_metrics_save = 1`: Prevents the kernel from saving TCP route metrics in cache after a connection closes.
+  4. `tcp_moderate_rcvbuf = 0`: Disables automatic receive buffer modulation, maintaining fixed buffer sizes.
+* **Untuned Config Value:** `tcp_autocorking = 1`, `tcp_slow_start_after_idle = 1`, `tcp_no_metrics_save = 0`
+* **Tuned Config Value:** `tcp_autocorking = 0`, `tcp_slow_start_after_idle = 0`, `tcp_no_metrics_save = 1`, `tcp_moderate_rcvbuf = 0`
+* **What Difference It Makes:** Forces **immediate packet serialization**. The instant your trading logic issues a `send()` call for a 64-byte order execution message (OUCH, FIX), the kernel pushes it directly to the NIC transmit FIFO without holding it back.
+* **Why It's Important for Market Data & Order Gateways:** Autocorking is disastrous for trading: it can delay an outbound order execution by up to **1 millisecond** while waiting for more data. Setting `tcp_autocorking=0` ensures your order hits the wire instantly.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ TCP AUTOCORKING: PACKET DELAY vs IMMEDIATE WIRE TRANSMISSION            │
+├─────────────────────────────────────────────────────────────────────────┤
+│ AUTOCORKING ENABLED (Untuned Default - Optimized for bulk throughput): │
+│ Time 0µs:   Order 1 (64 bytes) submitted ──> [Socket Buffer: HELD]      │
+│ Time 200µs: Kernel waits for more bytes...                              │
+│ Time 1000µs: Kernel flushes buffer to wire ──> [1 MILLISECOND DELAY!]   │
+│                                                                         │
+│ AUTOCORKING DISABLED (Tuned: tcp_autocorking = 0):                      │
+│ Time 0µs:   Order 1 (64 bytes) submitted ──> [NIC Transmit Wire: NOW!]  │
+│ Order reaches exchange matching engine in sub-microsecond time!         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Tuning 10: IRQ Shielding & Core Pinning (`irqbalance` Masked)
+* **What it is:** Stops and masks the `irqbalance` daemon, and writes CPU mask `1` to `/proc/irq/default_smp_affinity`.
+* **Untuned Config Value:** `irqbalance` running; interrupts dynamically distributed across all cores.
+* **Tuned Config Value:** `irqbalance` masked and stopped; all peripheral hardware IRQs pinned to Core 0 (Housekeeping).
+* **What Difference It Makes:** Shields Cores 1–15 from all peripheral hardware interrupts (storage NVMe interrupts, USB controllers, network management interrupts). Core 0 absorbs all system interrupts, while trading cores run 100% uninterrupted.
+* **Why It's Important for Market Data:** In our baseline test before tuning on server `cherry`, dynamic IRQ distribution caused **923 execution pauses greater than 1µs**, with peak pauses reaching **1.2 milliseconds** when storage and network interrupts hit the measured core. Pinning IRQs to Core 0 reduced jitter pauses from **923 events down to 1 event (a 99.89% reduction!)** and eliminated the 1.2ms pause entirely!
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ IRQ SHIELDING: DISTRIBUTED JITTER vs SHIELDED EXECUTION                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│ UNTUNED (irqbalance Active):                                            │
+│ Core 0: ──[IRQ]──────────────[IRQ]──────────────[IRQ]──                 │
+│ Core 1 (Your Algo): ────[IRQ]──────[IRQ]─────────────── <── INTERRUPTED!│
+│ Every interrupt adds 1 to 5 µs of pause and trashes your L1 cache!      │
+│                                                                         │
+│ TUNED (irqbalance Masked, all IRQs on Core 0):                          │
+│ Core 0 (Housekeeping): ─[IRQ][IRQ][IRQ][IRQ][IRQ][IRQ]─                 │
+│ Core 1 (Trading Core): ──────────────────────────────── <── ZERO IRQs!  │
+│ 100% clean, uninterrupted execution!                                    │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Tuning 11: Pre-allocating Static 2MB Hugepages (hugetlbfs)
+* **What it is:** Allocates a dedicated pool of 2,048 static 2MB memory blocks (4GB total) and mounts a dedicated `hugetlbfs` filesystem at `/dev/hugepages`.
+* **Untuned Config Value:** `0` hugepages allocated; applications use standard 4KB paging.
+* **Tuned Config Value:** `vm.nr_hugepages = 2048`, mounted at `/dev/hugepages`
+* **What Difference It Makes:** Standard 4KB paging requires a 4-level page table walk in hardware whenever a Translation Lookaside Buffer (TLB) miss occurs, costing **~400 nanoseconds**. 2MB hugepages reduce page table depth to 3 levels, and a 16MB buffer requires only 8 page table entries instead of 4,096.
+* **Why It's Important for Market Data:** Large order books, symbol tables, and AF_XDP UMEM packet rings mapped in 2MB hugepages fit entirely within the CPU's hardware L1 D-TLB, completely eliminating hardware page table walk stalls.
+
+---
+
+#### Tuning 12: POSIX Real-Time & Memlock Limits (`/etc/security/limits.d/99-hft.conf`)
+* **What it is:** Sets user-space system resource limits for the trading user account:
+  - `memlock unlimited`: Maximum locked-in-memory address space.
+  - `rtprio 99`: Maximum real-time scheduling priority under `SCHED_FIFO` / `SCHED_RR`.
+  - `nofile 1048576`: Maximum open file descriptor limit.
+* **Untuned Config Value:** `memlock = 64 KB`, `rtprio = 0` (unprivileged), `nofile = 1024`
+* **Tuned Config Value:** `memlock = unlimited`, `rtprio = 99`, `nofile = 1048576`
+* **What Difference It Makes:** Standard Linux forbids regular users from locking memory or acquiring real-time scheduler priority. This configuration enables your trading application to call `mlockall(MCL_CURRENT | MCL_FUTURE)` to lock its entire address space into RAM, and to acquire `sched_setscheduler(SCHED_FIFO, 99)` for real-time kernel scheduling.
+* **Why It's Important for Market Data:** Prevents operating system permission errors (`EPERM`) when allocating large hugepage ring buffers or setting real-time thread priorities.
+
+---
+
+#### Tuning 13: PCIe High-Performance Bus & Read Request Optimization
+* **What it is:** 
+  1. `setpci -s <bdf> CAP_EXP+8.w=5000:7000`: Programs the PCI Express Maximum Read Request Size (MRRS) register on physical network controllers to 4,096 bytes (4KB).
+  2. `echo full > /sys/kernel/debug/sched/preempt`: Enforces full kernel preemption across all runtime scheduler domains.
+* **Untuned Config Value:** `MRRS = 512 bytes`, `sched/preempt = voluntary`
+* **Tuned Config Value:** `MRRS = 4096 bytes`, `sched/preempt = full`
+* **What Difference It Makes:**
+  - Standard MRRS of 512 bytes forces the network card DMA engine to fragment memory reads into multiple small Transaction Layer Packets (TLPs). Setting MRRS to 4096 bytes allows the NIC to burst-read memory across the PCIe bus in a single high-efficiency transaction.
+  - Runtime preemption reduces kernel dispatch latency tails to sub-microsecond levels.
+* **Why It's Important for Market Data:** Maximizes PCIe Transaction Layer throughput between physical 10GbE/100GbE network cards (like Intel E810 / X520) and host memory, accelerating outbound order dispatch and inbound packet DMA.
 
 ---
 
@@ -1017,6 +1680,111 @@ sudo ethtool -C eth0 adaptive-rx off adaptive-tx off rx-usecs 0 tx-usecs 0
 # Strip generic latency-inducing offloads
 sudo ethtool -K eth0 gro off lro off tso off gso off rx off tx off
 ```
+
+### 🌐 Advanced Network Stack & Socket Buffer Deep Dive
+
+When ingesting high-volume financial market data feeds (such as NASDAQ TotalView-ITCH, CME MDP 3.0, OPRA, or Eurex EMDI over UDP Multicast) or transmitting orders via binary protocols (NASDAQ OUCH, CME iLink 3, FIX), the operating system network stack is the frontline of defense against packet loss and latency jitter.
+
+Below is an exhaustive breakdown of **every network parameter and physical NIC tuning** configured by this suite:
+
+---
+
+#### Network Config 1: Maximum Socket Receive & Send Buffers (`rmem_max` & `wmem_max`)
+* **What it is:** Sets the upper ceiling (in bytes) for socket receive and send buffers that an application can request via `setsockopt(SO_RCVBUF)` and `setsockopt(SO_SNDBUF)`.
+* **Untuned Config Value:** `net.core.rmem_max = 212992` (208 KB), `net.core.wmem_max = 212992` (208 KB)
+* **Tuned Config Value:** `net.core.rmem_max = 134217728` (128 MB), `net.core.wmem_max = 134217728` (128 MB)
+* **What Difference It Makes:** Increases socket buffer capacity by **615x**. An untuned 208 KB buffer can hold only ~140 MTU packets (1500 bytes each). A 128 MB buffer holds up to **85,000 packets**.
+* **Why It's Important for Market Data:** During high-volatility events (e.g. market open or Fed interest rate decisions), exchange multicast feeds can burst at **10 Gigabits per second (over 800,000 packets per second)**. A 208 KB buffer fills up in **150 microseconds**! Once full, Linux drops incoming packets silently (`UDP buffer errors`), leading to missing trade updates and requiring slow TCP snapshot recovery. A 128 MB buffer absorbs massive market bursts effortlessly.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ UDP MARKET DATA BURST: BUFFER CAPACITY vs PACKET DROPS                  │
+├─────────────────────────────────────────────────────────────────────────┤
+│ UNTUNED DEFAULT (rmem_max = 208 KB):                                    │
+│   Market Open Quote Burst: 100,000 UDP packets arrive in 100ms          │
+│   [ 208 KB Socket Buffer ] ──> FULL in 150 µs!                          │
+│   Remaining 98,000 packets ──> [ DROPPED ON THE FLOOR! ]                │
+│   Result: Corrupted order book! Exchange sequence gap! Recovery storm!  │
+│                                                                         │
+│ TUNED (rmem_max = 128 MB):                                              │
+│   Market Open Quote Burst: 100,000 UDP packets arrive in 100ms          │
+│   [ 128 MB Socket Buffer ] ──> Holds all 100,000 packets easily!        │
+│   Zero packet drops. Zero gap recovery. 100% data integrity!            │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Network Config 2: Guaranteed Minimum UDP Buffer Allocation (`udp_rmem_min` & `udp_wmem_min`)
+* **What it is:** Defines the minimum memory size (in bytes) guaranteed to a UDP socket, even under severe operating system memory pressure.
+* **Untuned Config Value:** `net.ipv4.udp_rmem_min = 4096` (4 KB), `net.ipv4.udp_wmem_min = 4096` (4 KB)
+* **Tuned Config Value:** `net.ipv4.udp_rmem_min = 16384` (16 KB), `net.ipv4.udp_wmem_min = 16384` (16 KB)
+* **What Difference It Makes:** Increases guaranteed baseline UDP buffer pages by 4x, protecting UDP sockets from being starved by kernel memory reclaim.
+* **Why It's Important for Market Data:** UDP multicast is connectionless and has no retransmission or flow control. If the kernel throttles socket buffers due to transient memory pressure, packets are permanently lost.
+
+---
+
+#### Network Config 3: Kernel Input Device Backlog Queue (`netdev_max_backlog`)
+* **What it is:** The maximum number of incoming network packets queued in the kernel's per-CPU backlog list after being pulled from the network card ring buffer by the driver's NAPI poll loop, before being processed by the protocol stack.
+* **Untuned Config Value:** `1000` packets
+* **Tuned Config Value:** `250000` packets
+* **What Difference It Makes:** Expands the kernel backlog queue capacity by **250x**.
+* **Why It's Important for Market Data:** On 10GbE and 100GbE physical links, a burst of 1,000 packets arrives in less than **1 microsecond**. If the CPU is momentarily servicing an interrupt, an untuned queue of 1,000 packets overflows instantly, causing drops at the network interface layer before packets even reach socket buffers.
+
+---
+
+#### Network Config 4: Root Packet Queuing Discipline (`pfifo_fast` vs `fq_codel`)
+* **What it is:** The Linux Traffic Control (TC) queuing discipline (qdisc) governs how packets are scheduled for transmission onto the physical network card. Modern Linux distributions default to `fq_codel` (Fair Queueing with Controlled Delay), which aims to prevent "bufferbloat" for general internet traffic.
+* **Untuned Config Value:** `net.core.default_qdisc = fq_codel`
+* **Tuned Config Value:** `net.core.default_qdisc = pfifo_fast`
+* **What Difference It Makes:** Replaces a complex, compute-intensive queueing algorithm with a simple, lockless 3-band FIFO (First-In-First-Out) queue.
+* **Why It's Important for Order Gateways:** `fq_codel` actively inspects packet headers, computes flow hashes, tracks per-flow sojourn times, and introduces artificial delays or packet drops to regulate flow throughput. For an ultra-low-latency order execution gateway, this computation adds **300 to 800 nanoseconds** of jitter to every outbound order execution packet! `pfifo_fast` immediately pushes outbound orders directly to the NIC transmit ring without inspection.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ TRANSMIT QDISC: fq_codel (Complex) vs pfifo_fast (Zero Overhead)         │
+├─────────────────────────────────────────────────────────────────────────┤
+│ fq_codel (Untuned Default - General Internet Bufferbloat Prevention):   │
+│   Outbound Order ──> [ Hash Flow ID ] ──> [ Calculate Sojourn Time ]    │
+│                  ──> [ Fair Queue Classification ] ──> [ NIC Transmit ] │
+│   Latency Overhead: +300 to 800 nanoseconds per order!                  │
+│                                                                         │
+│ pfifo_fast (Tuned - Lockless FIFO):                                     │
+│   Outbound Order ──> [ Direct Lockless FIFO ] ──> [ NIC Transmit ]      │
+│   Latency Overhead: ZERO nanoseconds scheduling delay!                  │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Network Config 5: Physical Hardware Descriptor Rings (`ethtool -G rx 4096 tx 4096`)
+* **What it is:** Configures the number of DMA ring buffer descriptors allocated directly inside the network controller's hardware registers.
+* **Untuned Config Value:** `rx 256` or `512` descriptors, `tx 256` or `512` descriptors
+* **Tuned Config Value:** `rx 1024` (or `4096` on high-speed 25G/100G Intel/Mellanox NICs), `tx 1024` / `4096`
+* **What Difference It Makes:** Multiplies hardware queue capacity by 4x to 8x.
+* **Why It's Important for Market Data:** When an ITCH multicast packet wave hits the physical SFP+ optical transceiver, the packets are written into the hardware descriptor ring via PCIe DMA. If the descriptor ring is small (e.g. 256 descriptors), any microsecond stall in the CPU polling loop causes the hardware ring to fill and drop packets directly on the wire (`rx_discards_phy` or `rx_missed_errors`).
+
+---
+
+#### Network Config 6: Zero-Delay Interrupt Coalescing (`ethtool -C rx-usecs 0 adaptive-rx off`)
+* **What it is:** Network cards use "Interrupt Coalescing" to bundle multiple arriving packets together before firing a single hardware interrupt to the CPU. `rx-usecs` specifies how many microseconds the NIC waits before generating an interrupt.
+* **Untuned Config Value:** `adaptive-rx on`, `rx-usecs = 50` to `100` microseconds
+* **Tuned Config Value:** `adaptive-rx off`, `rx-usecs 0`, `tx-usecs 0`
+* **What Difference It Makes:** Completely disables packet bundling. Setting `rx-usecs 0` instructs the hardware controller to generate an interrupt (or mark descriptor completion) the **exact instant the last byte of a packet hits the silicon**.
+* **Why It's Important for Market Data:** With adaptive coalescing enabled, the first packet of a market data quote burst sits inside the NIC buffer for **50 to 100 microseconds** while the hardware waits to see if more packets arrive! For HFT, a 100 µs delay means your strategy is completely blind to price moves until long after competitors have already traded.
+
+---
+
+#### Network Config 7: Stripping Latency-Inducing NIC Offloads (`ethtool -K ... off`)
+* **What it is:** Modern NICs include specialized silicon engines designed to offload packet processing from the CPU:
+  - **GRO** (Generic Receive Offload) & **LRO** (Large Receive Offload): Merges multiple consecutive small TCP/UDP packets into a single giant packet buffer before passing it to the OS.
+  - **TSO** (TCP Segmentation Offload) & **GSO** (Generic Segmentation Offload): Splits large user-space buffers into MTU-sized packets in hardware.
+* **Untuned Config Value:** `gro on`, `lro on`, `tso on`, `gso on`
+* **Tuned Config Value:** `gro off`, `lro off`, `tso off`, `gso off`, `rx off`, `tx off`
+* **What Difference It Makes:** Forces the network interface to process each packet individually, exactly as received over the wire.
+* **Why It's Important for Market Data:** GRO and LRO are catastrophic for market data: they intentionally buffer and delay incoming packets to assemble larger buffers! This adds **20 to 100 microseconds** of artificial latency jitter and can corrupt timing headers used for tick timestamping. Stripping offloads ensures raw, immediate packet delivery.
+
+---
 
 ### End-to-End Market Data Ingestion Pipeline (AF_XDP to Lock-Free SPSC Queue)
 
@@ -1106,6 +1874,62 @@ void af_xdp_rx_loop() {
     }
 }
 ```
+
+---
+
+## 🧪 Simulation Environment Setup (AlmaLinux 10 on KVM)
+
+To validate scripts, AF_XDP ring buffers, and sysctl routines before deploying to live hardware, a fully automated KVM simulation is included.
+
+### Launching and Managing the Simulation VM
+```bash
+cd simulation
+./setup_simulation.sh create   # Spin up fresh AlmaLinux 10 VM (~10s)
+./setup_simulation.sh status   # Check VM run state and assigned IP
+./setup_simulation.sh ssh      # Log directly into the running VM
+./setup_simulation.sh sync     # Pull benchmark results into local ./results/
+./setup_simulation.sh destroy  # Tear down VM and erase temporary disk
+```
+
+### ⚡ One-Shot Simulation Recreation & Automated Provisioning (`recreate_simulation.sh`)
+
+For a completely automated, zero-touch tear-down and rebuild of the AlmaLinux simulation environment, use [`recreate_simulation.sh`](file:///home/neville/hft/recreate_simulation.sh). It chains the entire lifecycle into a single pipeline:
+
+```bash
+# Interactive mode (prompts for confirmation before destroying):
+./recreate_simulation.sh
+
+# Headless / Unattended mode (auto-confirms teardown):
+./recreate_simulation.sh -y
+```
+
+#### What the Recreate Pipeline Automates:
+1. **VM Teardown**: Calls `setup_simulation.sh destroy` to terminate `hft-alma`, undefine the domain, and erase the temporary copy-on-write disk overlay.
+2. **Pristine Rebuild**: Calls `setup_simulation.sh create` to spin up a fresh AlmaLinux 10 VM from base image with host CPU/cache passthrough and cloud-init SSH injection.
+3. **Remote Server Toolchain Provisioning**: Runs [`setup_remote_server.sh`](file:///home/neville/hft/setup_remote_server.sh) to:
+   - Synchronize local SSH credentials so the VM can pull from private Git repositories.
+   - Enable AlmaLinux CRB (CodeReady Linux Builder) and EPEL package repositories.
+   - Install C/C++ compiler toolchains (`gcc`, `g++`, `make`, `cmake`), low-latency kernel bypass packages (`libxdp`, `libbpf`), profiling tools (`perf`, `numactl`, `cyclictest`), and download utilities (`wget`, `curl`).
+   - Authenticate with GitHub and clone `git@github.com:wazzuck/hft.git` to `~/hft`.
+   - Clone `git@github.com:wazzuck/vunderland.git` to `~/vunderland` and execute `vunderland/settings/setup.sh` (provisions micromamba, Python base environment, Rust toolchain, and developer dotfiles).
+   - Configure master latency tuning engine strictly in `~/hft/hft_tuning.sh`.
+4. **Environment Setup & AGY CLI Installation**: Connects to the VM over SSH and executes [`install.sh`](file:///home/neville/hft/install.sh):
+   - Installs `tmux`, `git`, `curl`, and `ca-certificates`.
+   - Downloads and installs the **Google Antigravity CLI (`agy`)** via its official bootstrapper.
+   - Configures `PATH` persistence in `~/.bashrc`.
+5. **Post-Setup Health Verification**: Validates operating system version, `git`, `tmux`, `agy`, `hft` repo, `vunderland` repo, micromamba, and Rust toolchain on the VM, confirming it is fully ready for low-latency tuning experiments.
+
+---
+
+### Simulation Specifics
+- **OS**: AlmaLinux 10 (GenericCloud QCOW2 image)
+- **Networking**: Bridged NAT with static IP (`192.168.122.210`)
+- **Cloud-Init**: Injects local SSH keys and provisions user `neville` with passwordless sudo.
+- **SSH Alias**: Connect instantly via `ssh hft-sim`.
+
+> [!NOTE]
+> **Virtual Machine vs. Bare-Metal Latency:**
+> In KVM, hypervisor preemption ("steal time") and virtual clock emulation (`kvm-clock`) introduce millisecond-scale jitter spikes. The VM exists to test **code correctness, build pipelines, and AF_XDP descriptor rings** safely without risking live trading systems.
 
 ---
 

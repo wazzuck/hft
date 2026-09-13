@@ -1312,7 +1312,7 @@ learning_mode() {
     echo -e "${WHITE}${BOLD}└──────────────────────────────────────┴─────────────┴─────────────┴─────────────┴──────────────┴───────────┘${NC}"
 
     echo ""
-    print_header "DEEP ARCHITECTURAL EXPLANATION OF THE 10 TUNINGS"
+    print_header "DEEP ARCHITECTURAL EXPLANATION OF THE 13 TUNINGS"
 
     echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${WHITE}${BOLD}1. CPU Scaling Governor (performance) & Min Frequency Pinning${NC}"
@@ -1633,6 +1633,19 @@ EOF_T10
     Standard 4KB paging requires 4-level page table walks upon a D-TLB miss. Traversing a 16MB structure
     demands 4,096 Page Table Entries (PTEs). With 2MB hugepages, only 8 PTEs are required across 3 levels.
     All 8 entries reside permanently within the CPU's Level 1 D-TLB, eliminating hardware memory walks.
+
+    ┌─────────────────────────────────────────────────────────────────┐
+    │ 4KB STANDARD PAGES vs 2MB STATIC HUGEPAGES                      │
+    ├─────────────────────────────────────────────────────────────────┤
+    │ 4KB Pages: 16MB Order Book = 4,096 Page Table Entries (PTEs)    │
+    │   ├── Exceeds CPU TLB cache capacity                            │
+    │   └── TLB Miss triggers 4-level walk in DRAM (~400ns stall)     │
+    │                                                                 │
+    │ 2MB Hugepages: 16MB Order Book = ONLY 8 PTEs!                   │
+    │   ├── All 8 entries fit permanently in hardware L1 D-TLB        │
+    │   └── ZERO memory translation stalls: 0ns TLB miss penalty!     │
+    └─────────────────────────────────────────────────────────────────┘
+
   • Multi-NUMA HFT Impact:
     Pre-allocating hugepages at boot guarantees contiguous physical DRAM on the local NUMA node adjacent
     to trading threads and NIC descriptor rings, eliminating runtime fragmentation stalls.
@@ -1647,6 +1660,19 @@ EOF_T11
     Allows trading binaries to execute mlockall(MCL_CURRENT | MCL_FUTURE) to lock entire order books,
     shared memory ring buffers, and AF_XDP UMEM frames directly into physical DRAM without permission denial.
     Grants unprivileged trading user accounts permission to acquire SCHED_FIFO 99 real-time priority.
+
+    ┌─────────────────────────────────────────────────────────────────┐
+    │ POSIX REAL-TIME & MEMLOCK PRIVILEGES                            │
+    ├─────────────────────────────────────────────────────────────────┤
+    │ memlock = unlimited:                                            │
+    │   Enables mlockall() to lock order books into RAM permanently.  │
+    │   Guarantees zero paging, zero swapping, zero page faults!      │
+    │                                                                 │
+    │ rtprio = 99 (SCHED_FIFO 99):                                    │
+    │   Grants maximum real-time priority. Linux scheduler will NEVER │
+    │   preempt your trading loop for any standard operating task!    │
+    └─────────────────────────────────────────────────────────────────┘
+
   • Multi-NUMA HFT Impact:
     Guarantees that once memory is allocated on the local NUMA node, pages are never swapped or unmapped.
 EOF_T12
@@ -1660,6 +1686,20 @@ EOF_T12
     Default PCIe MRRS (512B) forces the NIC DMA engine to issue multiple read TLPs for packet buffers.
     Setting MRRS to 4096B allows maximum DMA burst transfers across PCIe Gen4/Gen5 lanes, minimizing bus latency.
     Coupled with preempt=full, kernel locks become preemptible across all execution paths, slashing dispatch jitter.
+
+    ┌─────────────────────────────────────────────────────────────────┐
+    │ PCIE MAX READ REQUEST SIZE (MRRS): 512B vs 4096B BURST          │
+    ├─────────────────────────────────────────────────────────────────┤
+    │ DEFAULT (MRRS = 512B):                                          │
+    │   Reading 4KB packet requires 8 separate PCIe read requests!    │
+    │   [512B] ──> [512B] ──> [512B] ──> [512B] ... High bus overhead │
+    │                                                                 │
+    │ TUNED (MRRS = 4096B):                                           │
+    │   Reading 4KB packet requires ONLY 1 PCIe burst transaction!    │
+    │   [ ═══════════════ 4096 BYTES BURST DMA ═══════════════ ]      │
+    │   Maximizes bus efficiency, slashing descriptor delivery time!  │
+    └─────────────────────────────────────────────────────────────────┘
+
   • Multi-NUMA HFT Impact:
     Optimizes PCIe Transaction Layer throughput between physical NICs (Intel E810) and the root complex.
 EOF_T13
