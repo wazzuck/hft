@@ -44,19 +44,19 @@ In high-frequency trading, processing latency is measured in **nanoseconds**, no
 
 - **Dynamic CPU Frequency Scaling** causes 5µs–20µs clock ramps when bursting from idle.
 - **CPU Deep Sleep C-States** induce 10µs–150µs exit latency penalties when waking sleeping cores on packet arrival.
-- **CFS Scheduler Load Balancing** migrates threads between CPU cores and NUMA sockets*, thrashing L1/L2/L3 caches.
+- **CFS (Completely Fair Scheduler) Load Balancing** migrates threads between CPU cores and NUMA sockets*, thrashing L1/L2/L3 caches.
 - **Kernel Network Stack (`sk_buff`)** copies buffers across kernel/user boundaries and suffers softirq scheduling overhead (~3µs–15µs per round-trip).
 - **Background Kernel Workers** (`khugepaged`, `vmstat_update`, `numabalancing`*) freeze trading threads for milliseconds.
 
 This project delivers a **cohesive 3-layer tuning strategy**:
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────────────────────┐
 │ Layer 1: Hardware & BIOS Firmware (SMT, C-States, Turbo, EPB, NUMA*, ASPM)│
-├─────────────────────────────────────────────────────────────────────────┤
+├───────────────────────────────────────────────────────────────────────────┤
 │ Layer 2: Kernel Boot Arguments (isolcpus, nohz_full, rcu_nocbs, idle=poll)│
-├─────────────────────────────────────────────────────────────────────────┤
-│ Layer 3: Runtime Kernel & OS (PM QoS 0µs, sysctl, IRQ Shielding, AF_XDP)│
-└─────────────────────────────────────────────────────────────────────────┘
+├───────────────────────────────────────────────────────────────────────────┤
+│ Layer 3: Runtime Kernel & OS (PM QoS 0µs, sysctl, IRQ Shielding, AF_XDP)  │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 *\*Asterisk Note: Multi-NUMA tuning applies when deploying to multi-socket / multi-node server platforms; it is not required on high-frequency single-NUMA AMD Ryzen architectures.*
 
@@ -69,46 +69,60 @@ If you come from a market data background (ITCH/OUCH, FIX, multicast, OPRA, CTA/
 Think of C-States as power-saving sleep modes for each CPU core. When there's a quiet period between market data bursts (e.g., between auction cycles), Linux puts idle cores to sleep to save power:
 
 ```text
-┌─────────────────────────────────────────────────────────────────────────┐
-│ CPU C-STATES: WHAT HAPPENS WHEN A MARKET DATA PACKET ARRIVES           │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│ STATE       POWER USE    WAKE-UP TIME    WHAT'S HAPPENING IN HARDWARE   │
-│ ─────       ─────────    ────────────    ─────────────────────────────   │
-│ C0 Active   100%         0 ns            Core running your code         │
-│ C1 Halt     ~60%         1-2 µs          Clock trees halted             │
-│ C1E         ~40%         2-10 µs         Clock + voltage reduced        │
-│ C3 Sleep    ~20%         10-50 µs        L1/L2 caches flushed!          │
-│ C6 Deep     ~5%          50-150 µs       Core fully powered off!        │
-│                                                                         │
-│ SCENARIO: Nasdaq ITCH feed goes quiet for 5ms between symbol bursts.    │
-│ Linux sees the core is idle and drops it into C6 Deep Sleep.            │
-│                                                                         │
-│ [Quiet Period] ──────────> [Core enters C6] ──────────> [Packet Arrives]│
-│                                                         │               │
-│                                                   150 µs wake penalty!  │
-│                                                   Your trading algo     │
-│                                                   can't start until     │
-│                                                   core powers back on.  │
-│                                                                         │
-│ FIX: Set PM QoS /dev/cpu_dma_latency = 0  →  Core stays in C0 always   │
-└─────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ CPU C-STATES: WHAT HAPPENS WHEN A MARKET DATA PACKET ARRIVES                 │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│ STATE             POWER USE   WAKE-UP TIME    WHAT'S HAPPENING IN HARDWARE   │
+│ ──────            ─────────   ────────────    ─────────────────────────────  │
+│ C0  Active        100%        0 ns            Core running your code         │
+│ C1  Halt          ~60%        1-2 µs          Clock trees halted             │
+│ C1E Enhanced Halt ~40%        2-10 µs         Clock + voltage reduced        │
+│ C3  Sleep         ~20%        10-50 µs        L1/L2 caches flushed!          │
+│ C6  Deep Sleep    ~5%         50-150 µs       Core fully powered off!        │
+│                                                                              │
+│ SCENARIO: Nasdaq ITCH feed goes quiet for 5ms between symbol bursts.         │
+│ Linux sees the core is idle and drops it into C6 Deep Sleep.                 │
+│                                                                              │
+│ [Quiet Period] ─────────────> [Core enters C6] ────────────> [Packet Arrives]│
+│                                                              │               │
+│                                                         150 µs wake penalty! │
+│                                                         Your trading algo    │
+│                                                         can't start until    │
+│                                                         core powers back on. │
+│                                                                              │
+│ FIX: Set PM QoS /dev/cpu_dma_latency = 0  →  Core stays in C0 always         │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 #### Concept 2: Page Tables & TLB — Why Memory Translation Costs You Nanoseconds
 
-Your trading application's memory (order books, ring buffers, symbol tables) uses **virtual addresses**. The CPU must translate every virtual address to a physical DRAM location using **Page Tables**. The CPU caches recent translations in a small hardware buffer called the **TLB (Translation Lookaside Buffer)**:
+Your trading application's memory (order books, ring buffers, symbol tables) uses **virtual addresses**. The CPU must translate every virtual address to a physical DRAM location using **Page Tables**. The CPU caches recent translations in a small hardware buffer called the **TLB (Translation Lookaside Buffer)**, which is physically located inside the Memory Management Unit (MMU) directly on the CPU core, adjacent to the L1 cache for ultra-fast access.
+
+When a TLB miss occurs, the hardware memory management unit (MMU) must "walk" the page tables to find the physical address. Modern x86-64 processors use a hierarchical directory structure to do this in four sequential steps:
+1. **Step 1: PGD (Page Global Directory - L4)** — The CPU reads the top-level master index.
+2. **Step 2: PUD (Page Upper Directory - L3)** — It uses the PGD to find the second-level index.
+3. **Step 3: PMD (Page Middle Directory - L2)** — It uses the PUD to find the third-level index.
+4. **Step 4: PTE (Page Table Entry - L1)** — It uses the PMD to find the final lookup, which points directly to a standard **4KB** physical memory page in DRAM.
+
+**How they interact:** To find a 4KB page, the CPU reads the PGD to find the PUD, reads the PUD to find the PMD, reads the PMD to find the PTE, and finally reads the PTE to find the physical DRAM address. This is called a "page walk," and every single step requires a slow, independent memory read. 
+
+**The TLB Miss Penalty (Cache vs RAM):** These page tables (PGD, PUD, PMD, PTE) physically live in **main memory (RAM)**. While the CPU tries to cache them in the standard L1/L2/L3 caches, an HFT application traversing massive order books will frequently evict them. When a TLB miss occurs and the page tables are no longer in the cache, the MMU must fetch each directory level directly from RAM. At ~100ns per RAM fetch, a "cold" 4-step page walk inflicts a devastating **~400ns latency penalty** just to calculate the address, *before* it even reads your actual trading data!
+
+**Why Hugepages Skip the PTE Level:** In x86-64 hardware, the PMD (Level 2) directory entries contain a special hardware flag called the "Page Size" (PS) bit. When the Linux kernel allocates a 2MB Hugepage, it sets this PS flag to `1` in the PMD. During a page walk, if the MMU reads a PMD with this flag set, it is hardwired to stop walking immediately. Instead of pointing to a PTE table, the PMD points directly to the physical memory block.
+
+By using **2MB Hugepages**, the final PTE level is bypassed entirely. This not only skips a memory lookup step (saving ~100ns during a cold walk), but crucially, one 2MB page replaces 512 separate 4KB pages, making it vastly easier for the TLB to cache your entire order book!
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 4KB PAGES vs 2MB HUGEPAGES: TLB MISS COST                              │
+│ 4KB PAGES vs 2MB HUGEPAGES: TLB MISS COST                               │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
 │ STANDARD 4KB PAGES (default Linux):                                     │
-│ ┌─────────┐    ┌─────┐    ┌─────┐    ┌─────┐    ┌─────┐    ┌────────┐ │
-│ │ Virtual │───>│ PGD │───>│ PUD │───>│ PMD │───>│ PTE │───>│Physical│ │
-│ │ Address │    │(L4) │    │(L3) │    │(L2) │    │(L1) │    │  DRAM  │ │
-│ └─────────┘    └─────┘    └─────┘    └─────┘    └─────┘    └────────┘ │
+│ ┌─────────┐    ┌─────┐    ┌─────┐    ┌─────┐    ┌─────┐    ┌────────┐   │
+│ │ Virtual │───>│ PGD │───>│ PUD │───>│ PMD │───>│ PTE │───>│Physical│   │
+│ │ Address │    │(L4) │    │(L3) │    │(L2) │    │(L1) │    │  DRAM  │   │
+│ └─────────┘    └─────┘    └─────┘    └─────┘    └─────┘    └────────┘   │
 │                  Each arrow = 1 memory read (~100ns each)               │
 │                  Total TLB miss penalty: ~400ns                         │
 │                                                                         │
@@ -116,14 +130,14 @@ Your trading application's memory (order books, ring buffers, symbol tables) use
 │ TLB can only cache ~512-1536 entries → constant TLB misses!             │
 │                                                                         │
 │ 2MB HUGEPAGES (our tuning):                                             │
-│ ┌─────────┐    ┌─────┐    ┌─────┐    ┌─────┐    ┌────────┐            │
-│ │ Virtual │───>│ PGD │───>│ PUD │───>│ PMD │───>│Physical│            │
-│ │ Address │    │(L4) │    │(L3) │    │(L2) │    │  DRAM  │            │
-│ └─────────┘    └─────┘    └─────┘    └─────┘    └────────┘            │
-│                  Only 3 levels! And a 16MB order book = only 8 entries   │
+│ ┌─────────┐    ┌─────┐    ┌─────┐    ┌─────┐    ┌────────┐              │
+│ │ Virtual │───>│ PGD │───>│ PUD │───>│ PMD │───>│Physical│              │
+│ │ Address │    │(L4) │    │(L3) │    │(L2) │    │  DRAM  │              │
+│ └─────────┘    └─────┘    └─────┘    └─────┘    └────────┘              │
+│                  Only 3 levels! And a 16MB order book = only 8 entries  │
 │                  All 8 fit permanently in the L1 D-TLB = 0 TLB misses!  │
 │                                                                         │
-│ MARKET DATA ANALOGY: Imagine your symbol lookup table was spread across  │
+│ MARKET DATA ANALOGY: Imagine your symbol lookup table was spread across │
 │ 4,096 filing cabinets (4KB pages) vs 8 filing cabinets (2MB hugepages). │
 │ Which is faster to search?                                              │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -147,18 +161,18 @@ When market data arrives at your NIC, the path to your trading application is ve
 │ │ recvfrom(sock, buf); │      │ │ // Already in your   │                │
 │ │ // 3-8 µs later...   │      │ │ // memory! ~30 ns    │                │
 │ └──────────▲───────────┘      │ └──────────▲───────────┘                │
-│            │ copy_to_user()   │            │ (no copy!)                  │
-│ ═══════════╪══════════════    │ ═══════════╪════════════════             │
-│  KERNEL    │                  │  KERNEL    │ (bypassed!)                 │
-│ ┌──────────┴───────────┐      │            │                             │
-│ │ sk_buff allocation   │      │            │                             │
-│ │ Protocol headers     │      │            │                             │
-│ │ Checksum validation  │      │            │                             │
-│ │ Socket buffer queue  │      │            │                             │
-│ │ softirq scheduling   │      │            │                             │
-│ └──────────▲───────────┘      │            │                             │
-│ ═══════════╪══════════════    │ ═══════════╪════════════════             │
-│  HARDWARE  │                  │  HARDWARE  │                             │
+│            │ copy_to_user()   │            │ (no copy!)                 │
+│ ═══════════╪══════════════    │ ═══════════╪════════════════            │
+│  KERNEL    │                  │  KERNEL    │ (bypassed!)                │
+│ ┌──────────┴───────────┐      │            │                            │
+│ │ sk_buff allocation   │      │            │                            │
+│ │ Protocol headers     │      │            │                            │
+│ │ Checksum validation  │      │            │                            │
+│ │ Socket buffer queue  │      │            │                            │
+│ │ softirq scheduling   │      │            │                            │
+│ └──────────▲───────────┘      │            │                            │
+│ ═══════════╪══════════════    │ ═══════════╪════════════════            │
+│  HARDWARE  │                  │  HARDWARE  │                            │
 │ ┌──────────┴───────────┐      │ ┌──────────┴───────────┐                │
 │ │ NIC DMA writes to    │      │ │ NIC DMA writes       │                │
 │ │ kernel ring buffer   │      │ │ directly to UMEM     │                │
@@ -185,24 +199,24 @@ Hardware devices (NICs, NVMe drives, USB controllers) signal the CPU via **Inter
 │                                                                         │
 │ WITHOUT IRQ SHIELDING (irqbalance running):                             │
 │                                                                         │
-│ Core 0 ─────[IRQ]──────────────[IRQ]──────────────[IRQ]──── (busy)     │
-│ Core 1 ─────────[IRQ]────[IRQ]──────────[IRQ]────────────── (your algo)│
-│ Core 2 ──[IRQ]────────────────────[IRQ]─────────[IRQ]────── (idle)     │
+│ Core 0 ─────[IRQ]──────────────[IRQ]──────────────[IRQ]──── (busy)      │
+│ Core 1 ─────────[IRQ]────[IRQ]──────────[IRQ]────────────── (your algo) │
+│ Core 2 ──[IRQ]────────────────────[IRQ]─────────[IRQ]────── (idle)      │
 │                                                                         │
 │ irqbalance distributes IRQs "fairly" across all cores.                  │
 │ Your trading algo on Core 1 gets interrupted randomly!                  │
-│ Each IRQ = 1-5 µs pause + L1/L2 cache pollution.                       │
+│ Each IRQ = 1-5 µs pause + L1/L2 cache pollution.                        │
 │                                                                         │
 │ WITH IRQ SHIELDING (our tuning):                                        │
 │                                                                         │
-│ Core 0 ─[IRQ][IRQ][IRQ][IRQ][IRQ][IRQ][IRQ][IRQ]─── (housekeeping)    │
-│ Core 1 ──────────────────────────────────────────── (your algo: CLEAN) │
-│ Core 2 ──────────────────────────────────────────── (isolated: CLEAN)  │
+│ Core 0 ─[IRQ][IRQ][IRQ][IRQ][IRQ][IRQ][IRQ][IRQ]─── (housekeeping)      │
+│ Core 1 ──────────────────────────────────────────── (your algo: CLEAN)  │
+│ Core 2 ──────────────────────────────────────────── (isolated: CLEAN)   │
 │                                                                         │
 │ All device IRQs are pinned to Core 0 (the "housekeeping" core).         │
 │ Trading cores run with ZERO hardware interruptions.                     │
 │                                                                         │
-│ MARKET DATA ANALOGY: It's like having a dedicated phone operator         │
+│ MARKET DATA ANALOGY: It's like having a dedicated phone operator        │
 │ (Core 0) handle all incoming calls, so the traders on the desk          │
 │ (Cores 1-15) are never distracted.                                      │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -217,9 +231,9 @@ Linux tries to be "smart" about sending small TCP packets. **Autocorking** delay
 │ TCP AUTOCORKING: COALESCING vs IMMEDIATE DISPATCH                       │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
-│ WITH AUTOCORKING (default Linux — optimized for bulk throughput):        │
+│ WITH AUTOCORKING (default Linux — optimized for bulk throughput):       │
 │                                                                         │
-│ t=0µs   Your algo sends 64-byte order ──> [Socket Buffer: HELD]        │
+│ t=0µs   Your algo sends 64-byte order ──> [Socket Buffer: HELD]         │
 │ t=200µs Another write arrives            ──> [Socket Buffer: HELD]      │
 │ t=1ms   Kernel decides to flush          ──> [NIC] ──> Exchange         │
 │                                                                         │
@@ -238,44 +252,100 @@ Linux tries to be "smart" about sending small TCP packets. **Autocorking** delay
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### Concept 6: CPU Cache Hierarchy — Why Thread Migration Destroys Performance
+#### Concept 6: Multi-NUMA CPU Topology, Cache Hierarchy & Context Switching
 
-Modern CPUs have a hierarchy of increasingly fast (but smaller) memory caches. When a thread migrates to a different core, all cached data is lost:
+Ultra-low latency HFT servers frequently deploy high-frequency, multi-NUMA enterprise processors—such as the **AMD Ryzen Threadripper PRO 7000WX / 9000WX** (e.g., 7995WX, 7975WX, 9995WX boosting up to 5.1–5.3 GHz) or frequency-optimized **AMD EPYC 9004/9005 F-Series** (e.g., 9174F, 9374F, 9575F boosting to 5.0 GHz) partitioned into **NPS4 (4 NUMA nodes per socket)** mode.
+
+Understanding how L1, L2, and L3 caches attach to cores across NUMA nodes is critical to understanding why context switching and thread migration devastate tick-to-trade latency:
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ CPU CACHE HIERARCHY (AMD Zen 5 / Intel Raptor Lake)                     │
+│ MULTI-NUMA CACHE ARCHITECTURE: AMD THREADRIPPER PRO / EPYC (NPS4 MODE)  │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
-│            ┌──────────────┐                                             │
-│            │ L1 Data Cache│  32-48 KB   ~1 ns access   (per core)      │
-│            │ L1 Instr     │  32-64 KB   ~1 ns access   (per core)      │
-│            └──────┬───────┘                                             │
-│                   │                                                     │
-│            ┌──────┴───────┐                                             │
-│            │   L2 Cache   │  1-2 MB     ~3-5 ns access (per core)      │
-│            └──────┬───────┘                                             │
-│                   │                                                     │
-│         ┌─────────┴──────────┐                                          │
-│         │     L3 Cache       │  32-64 MB  ~10-15 ns    (shared in CCD) │
-│         └─────────┬──────────┘                                          │
-│                   │                                                     │
-│         ┌─────────┴──────────┐                                          │
-│         │   Main DRAM (DDR5) │  32-128 GB ~60-80 ns    (off-chip)      │
-│         └────────────────────┘                                          │
+│ ╔═════════════════════════════════════╗ ╔═════════════════════════════╗ │
+│ ║       NUMA NODE 0 (Local)           ║ ║       NUMA NODE 1 (Remote)  ║ │
+│ ║ ┌─────────────────────────────────┐ ║ ║ ┌─────────────────────────┐ ║ │
+│ ║ │ CCD 0 (Core Complex Die)        │ ║ ║ │ CCD 1                   │ ║ │
+│ ║ │ ┌─────────────┐ ┌─────────────┐ │ ║ ║ │ ┌─────────┐ ┌─────────┐ │ ║ │
+│ ║ │ │   CORE 0    │ │   CORE 1    │ │ ║ ║ │ │ CORE 8  │ │ CORE 9  │ │ ║ │
+│ ║ │ │ (Housekeep) │ │ (Trading)   │ │ ║ ║ │ │ ...     │ │ ...     │ │ ║ │
+│ ║ │ │ ┌─────────┐ │ │ ┌─────────┐ │ │ ║ ║ │ └─────────┘ └─────────┘ │ ║ │
+│ ║ │ │ │ L1i/L1d │ │ │ │ L1i/L1d │ │ │ ║ ║ │   (Private L1 & L2)     │ ║ │
+│ ║ │ │ │ 32K+32K │ │ │ │ 32K+32K │ │ │ ║ ║ └────────────┬────────────┘ ║ │
+│ ║ │ │ │  ~1 ns  │ │ │ │  ~1 ns  │ │ │ ║ ║              │              ║ │
+│ ║ │ │ └────┬────┘ │ │ └────┬────┘ │ │ ║ ║    ┌─────────┴──────────┐   ║ │
+│ ║ │ │ ┌────┴────┐ │ │ ┌────┴────┐ │ │ ║ ║    │ L3 Cache (32MB)    │   ║ │
+│ ║ │ │ │   L2    │ │ │ │   L2    │ │ │ ║ ║    └─────────┬──────────┘   ║ │
+│ ║ │ │ │  1 MB   │ │ │ │  1 MB   │ │ │ ║ ║              │              ║ │
+│ ║ │ │ │  ~3 ns  │ │ │ │  ~3 ns  │ │ │ ║ ║ ┌────────────┴────────────┐ ║ │
+│ ║ │ │ └────┬────┘ │ │ └────┬────┘ │ │ ║ ║ │ Memory Controller (DDR5)│ ║ │
+│ ║ │ └──────┼──────┴───────┼───────┘ │ ║ ║ └────────────┬────────────┘ ║ │
+│ ║ │        └───────┬──────┘         │ ║ ║              │              ║ │
+│ ║ │   ┌────────────┴────────────┐   │ ║ ║    ┌─────────┴──────────┐   ║ │
+│ ║ │   │ L3 Cache (32MB Unified) │   │ ║ ║    │ Remote DRAM (~160ns) │ ║ │
+│ ║ │   │ ~10-12 ns (Shared CCD)  │   │ ║ ║    └────────────────────┘ ║ ║ │
+│ ║ │   └────────────┬────────────┘   │ ║ ║                           ║ ║ │
+│ ║ └────────────────┼────────────────┘ ║ ╚══════════════▲════════════╝ ║ │
+│ ║                  │                  ║                │                │
+│ ║   ┌──────────────┴──────────────┐   ║   AMD Infinity │ Fabric / xGMI  │
+│ ║   │ Memory Controller (2-Ch)    │   ║   Central I/O Die (IOD) Bus     │
+│ ║   └──────────────┬──────────────┘   ║   (~140-180 ns Inter-NUMA)      │
+│ ║                  │                  ║                │                │
+│ ║   ┌──────────────┴──────────────┐   ║                │                │
+│ ║   │ Local DDR5 DRAM (~75 ns)    ├───╫────────────────┘                │
+│ ║   └─────────────────────────────┘   ║                                 │
+│ ╚═════════════════════════════════════╝                                 │
 │                                                                         │
-│ THREAD MIGRATION DISASTER:                                              │
-│ When CFS moves your trading thread from Core 1 → Core 5:               │
-│ • L1 data (your hot order book): GONE — must reload from L3/DRAM       │
-│ • L2 data (symbol lookup tables): GONE — must reload from L3/DRAM      │
-│ • Cache warmup cost: 10-50 µs of slower memory accesses                │
+│ CACHE TOPOLOGY BREAKDOWN:                                               │
+│ • L1i / L1d (~1 ns / ~4-5 cycles): Private to each individual core.     │
+│ • L2 Cache (~3-4 ns / ~14 cycles): Private 1MB per core.                │
+│ • L3 Cache (~10-12 ns / ~45 cycles): Shared across 8 cores in the CCD.  │
+│ • Local DDR5 Memory (~75 ns): Routed via local NUMA memory channels.    │
+│ • Remote NUMA Memory (~160+ ns): Crosses Infinity Fabric / UPI bus.     │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+##### ⚠️ Does Context Switching "Flush" the Cache? The Technical Reality
+
+In low-latency engineering, you will frequently hear that *"context switching flushes your CPU caches."* 
+
+**Technically**, the CPU hardware does **not** execute an explicit cache-invalidation instruction (such as `wbinvd` or `clflush`) during an OS process context switch. **Practically**, however, context switching inflicts the exact same devastating latency penalty through **cache eviction, cache pollution, and TLB displacement**:
+
+1. **L1/L2 Cache Eviction & Working-Set Pollution**:
+   - L1 Data (32–48 KB) and L2 (1 MB) caches are small, high-speed set-associative hardware buffers.
+   - When the Linux scheduler switches out your trading thread to service an interrupt, kernel worker (`khugepaged`, `ksoftirqd`), or background daemon, that foreign task immediately loads its own instruction pages, stack frames, and variables into cache lines.
+   - This **evicts (displaces)** your hot order book structures, circular ring buffers, and network descriptors from the private L1/L2 caches.
+2. **TLB Invalidation (`CR3` Page Directory Base Register Reload)**:
+   - When switching between processes, the CPU must reload the `CR3` control register with the incoming process's Page Global Directory.
+   - Although modern x86 processors support PCID (Process Context Identifiers) to preserve tagged entries, TLB capacity is strictly limited. The foreign process quickly displaces translation entries, forcing costly 4-level page table walks (~400 ns) when your trading thread resumes.
+3. **The Pipeline Stall Penalty (1 ns vs 160 ns)**:
+   - When your trading loop gets CPU time again, its next memory reads face a **cold cache penalty**.
+   - Instead of reading the order book at **~1 ns** from L1, the CPU stalls for **~10–12 ns** (L3 hit) or **~75–160 ns** (DRAM fetch). On a 5.0 GHz processor, a 160 ns stall burns **800 CPU clock cycles** during which your execution engine cannot process incoming market ticks.
+4. **Thread Migration Disaster (Cross-Core & Cross-NUMA)**:
+   - If CFS migrates your trading thread to another core on the same CCD: private L1 and L2 caches are completely cold.
+   - If CFS migrates your thread to a **different NUMA node**: even L3 is cold, and all existing heap allocations now incur the **~160 ns remote NUMA memory penalty** over the Infinity Fabric / UPI bus.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ CONTEXT SWITCHING LATENCY CLIFF: CACHE HIT vs CACHE MISS PENALTY        │
+├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
-│ FIX: migration_cost_ns=5000000 (5ms) tells CFS "don't migrate unless   │
-│ the core has been idle for 5ms" — keeping your caches warm.             │
+│ STEADY STATE (Core Isolated, Zero Context Switches):                    │
+│ Tick arrives ──> L1d Hit (~1 ns / 4 cycles) ──> Order Executed!         │
 │                                                                         │
-│ MARKET DATA ANALOGY: Imagine moving desks every few seconds. Each time  │
-│ you'd need to re-open all your applications, reload your watchlists,    │
-│ and re-sort your position blotter. That's what cache migration does.    │
+│ AFTER CONTEXT SWITCH / MIGRATION (Caches Polluted):                     │
+│ Tick arrives ──> L1 Miss (~1 ns)                                        │
+│               └──> L2 Miss (~4 ns)                                      │
+│                     └──> L3 Miss (~12 ns)                               │
+│                           └──> Remote DRAM Fetch (~160 ns / 800 cycles!)│
+│                                 └──> Order Arrives Late (TICK MISSED)   │
+│                                                                         │
+│ SUITE MITIGATIONS:                                                      │
+│ 1. isolcpus=domain,nohz,1-15  → Eliminates CFS context switches         │
+│ 2. nohz_full=1-15             → Disables timer ticks on trading cores   │
+│ 3. IRQ Shielding              → Moves hardware interrupts to Core 0     │
+│ 4. migration_cost_ns=5000000  → Penalizes cross-core thread migration   │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -313,7 +383,63 @@ hft/
 
 ## 🖥 Hardware & Network Architecture
 
-### 1. Multi-NUMA Memory Architecture*
+### 1. Modern CPU Architecture: Ryzen vs. EPYC for HFT
+
+Understanding the physical layout of modern processors is essential for writing deterministic, low-latency code. In the AMD ecosystem, processors are built using a "chiplet" design, where multiple smaller silicon dies are connected together rather than fabricating one massive monolithic chip.
+
+The two main architectures you will encounter are **Ryzen (Desktop/Workstation)** and **EPYC (Enterprise Server)**. While they share the same underlying core technology (e.g., Zen 4 / Zen 5), their physical topologies are designed for entirely different workloads.
+
+#### The Core Components
+Regardless of whether you use Ryzen or EPYC, the architecture consists of these fundamental building blocks:
+- **Core Complex (CCX):** A cluster of up to 8 processing cores that share a single, unified L3 cache. 
+- **Core Complex Die (CCD):** The physical piece of silicon ("chiplet") that contains one or two CCXs.
+- **I/O Die (IOD):** A central piece of silicon that handles all communication with the outside world. It contains the Memory Controllers (DDR5) and PCIe lanes (for your network cards).
+- **Infinity Fabric:** The high-speed interconnect bus that links the CCDs to the I/O Die. 
+
+#### The Cache Hierarchy
+HFT is a battle against the speed of light. The closer data is to the execution pipeline, the faster the trade.
+- **L1 Cache (Instruction & Data):** ~32-48KB per core. Extremely fast (~1ns / 4 cycles). Private to each core.
+- **L2 Cache:** ~1MB per core. Fast (~3ns / 14 cycles). Private to each core. Holds data evicted from L1.
+- **L3 Cache:** ~32-64MB per CCX. Slower (~10-12ns / 45 cycles). **Shared** across all 8 cores in the CCX. 
+- **Main Memory (DRAM):** Massive, but extremely slow (~75-100ns). 
+
+#### Ryzen vs. EPYC Topology
+
+**Ryzen (e.g., Ryzen 9 9950X):** Designed for extreme clock speeds (up to 5.7 GHz) and low-latency desktop workloads. All CCDs connect to a single, central I/O Die. From a memory perspective, it acts as a single **UMA (Uniform Memory Access)** node. Any core can access any memory channel with the exact same latency. 
+
+**EPYC / Threadripper PRO (e.g., EPYC 9374F):** Designed for massive core counts and aggregate memory bandwidth (up to 12 memory channels). Because a single I/O die bottleneck would choke 128 cores, the CPU is partitioned into quadrants. It acts as a **NUMA (Non-Uniform Memory Access)** architecture. If a core in Quadrant 1 needs data from memory physically wired to Quadrant 3, it suffers a massive latency penalty traversing the inter-chip interconnect.
+
+```text
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ ARCHITECTURE COMPARISON: RYZEN (UMA) vs EPYC (NUMA)                          │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│    RYZEN 9 9950X (Single NUMA Node)        EPYC 9000 SERIES (NPS4 Mode)      │
+│    ────────────────────────────────        ────────────────────────────      │
+│                                                                              │
+│   ┌───────┐ ┌───────┐                     ╔══════════╗          ╔══════════╗ │
+│   │ CCD 0 │ │ CCD 1 │                     ║  NUMA 0  ║          ║  NUMA 1  ║ │
+│   │8 Cores│ │8 Cores│                     ║ ┌──────┐ ║          ║ ┌──────┐ ║ │
+│   │32MB L3│ │32MB L3│                     ║ │CCD 0 │ ║          ║ │CCD 2 │ ║ │
+│   └───┬───┘ └───┬───┘                     ║ └──┬───┘ ║          ║ └──┬───┘ ║ │
+│       │         │                         ║    │     ║          ║    │     ║ │
+│  ═════╪═════════╪══════ (Infinity)      ══╬════╪═════╬══════════╬════╪═════╬═│
+│       │         │       (Fabric)          ║    │     ║ (Fabric) ║    │     ║ │
+│   ┌───┴─────────┴───┐                     ║ ┌──┴───┐ ║          ║ ┌──┴───┐ ║ │
+│   │ CENTRAL I/O DIE │                     ║ │I/O 0 │ ║          ║ │I/O 1 │ ║ │
+│   │  (2-Ch DDR5)    │                     ║ └──┬───┘ ║          ║ └──┬───┘ ║ │
+│   └────────┬────────┘                     ╚════╪═════╝          ╚════╪═════╝ │
+│            │                                   │                     │       │
+│        [ Memory ]                          [ Memory ]            [ Memory ]  │
+│                                                                              │
+│   HFT IMPLICATIONS:                       HFT IMPLICATIONS:                  │
+│   All memory access is equal.             Pinning threads to the correct     │
+│   Maximum single-thread speed.            NUMA node is absolutely critical.  │
+│   Ideal for critical-path execution.      Ideal for massive parallel scale.  │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 2. Multi-NUMA Memory Architecture*
 In a dual-socket or multi-die architecture (e.g., Intel Xeon Scalable or AMD EPYC), each CPU socket contains its own integrated memory controller:
 - **Local Memory Access**: ~35–45 ns
 - **Remote NUMA Access (QPI/UPI Interconnect)**: ~85–120 ns (a 2.5x latency penalty!)
@@ -323,7 +449,7 @@ Trading processes must be strictly pinned to the **specific NUMA node** where th
 > [!NOTE]
 > **\*Ryzen / Single-NUMA Architecture Note:** Hardware multi-NUMA memory partitioning and cross-interconnect penalties apply to multi-socket or multi-channel enterprise server platforms (e.g., Threadripper PRO, EPYC, Xeon). On high-frequency AMD Ryzen architectures (and single-NUMA Threadripper), memory is routed through a single I/O die with uniform memory access (UMA); multi-NUMA binding is therefore not required.
 
-### 2. Network Interface Architecture (Intel 10Gbps & FPGA Precursor)
+### 3. Network Interface Architecture (Intel 10Gbps & FPGA Precursor)
 While proprietary NICs (like Solarflare Onload) require expensive custom silicon, **Intel 10Gbps NICs** (Intel 82599ES, X520, X540, X550, X710) are the industry-standard commodity baseline.
 
 With Linux **AF_XDP (eXpress Data Path)**:
