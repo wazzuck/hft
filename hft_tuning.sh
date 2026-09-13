@@ -430,6 +430,116 @@ print(json.dumps(data, indent=2))
 }
 
 # ------------------------------------------------------------------------------
+# 4b. DYNAMIC HARDWARE TOPOLOGY & CORE PARTITIONING ENGINE
+# ------------------------------------------------------------------------------
+detect_hardware_topology() {
+    # 1. Physical Cores & Logical CPUs
+    local p_cores
+    p_cores="$(lscpu -p=Core 2>/dev/null | grep -v '^#' | sort -u | wc -l)"
+    [ -z "$p_cores" ] || [ "$p_cores" -lt 1 ] && p_cores="$(nproc --all 2>/dev/null || echo "4")"
+    HW_PHYS_CORES="$p_cores"
+    HW_TOTAL_CPUS="$(nproc --all 2>/dev/null || echo "$p_cores")"
+    
+    # SMT detection
+    HW_THREADS_PER_CORE="$(lscpu 2>/dev/null | grep -i "Thread(s) per core:" | awk '{print $NF}' || echo "1")"
+    [ -z "$HW_THREADS_PER_CORE" ] && HW_THREADS_PER_CORE=1
+
+    # Sockets and NUMA
+    HW_SOCKETS="$(lscpu 2>/dev/null | awk -F: '/Socket\(s\)/ {print $2}' | xargs || echo "1")"
+    HW_NUMA_NODES="$(lscpu 2>/dev/null | awk -F: '/NUMA node\(s\)/ {print $2}' | xargs || echo "1")"
+
+    # Memory in GB
+    local mem_kb
+    mem_kb="$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo "16777216")"
+    HW_TOTAL_MEM_GB=$((mem_kb / 1024 / 1024))
+
+    # CCD / L3 cache domain detection
+    HW_CCD_COUNT="$(cat /sys/devices/system/cpu/cpu*/cache/index3/shared_cpu_list 2>/dev/null | sort -u | wc -l)"
+    [ -z "$HW_CCD_COUNT" ] || [ "$HW_CCD_COUNT" -lt 1 ] && HW_CCD_COUNT=1
+
+    # 2. Intelligent Core Partitioning Decision Logic
+    if [ "$HW_PHYS_CORES" -le 1 ]; then
+        # Single-core system: cannot isolate without kernel starvation
+        HW_HOUSEKEEPING_CORES="0"
+        HW_HOUSEKEEPING_COUNT=1
+        HW_HOUSEKEEPING_MASK_HEX="1"
+        HW_TRADING_CORES=""
+        HW_ISOLATION_STRATEGY="Single-Core (Isolation Disabled to prevent OS starvation)"
+    elif [ "$HW_PHYS_CORES" -eq 2 ]; then
+        # 2-core: Core 0 = Housekeeping, Core 1 = Trading
+        HW_HOUSEKEEPING_CORES="0"
+        HW_HOUSEKEEPING_COUNT=1
+        HW_HOUSEKEEPING_MASK_HEX="1"
+        HW_TRADING_CORES="1"
+        HW_ISOLATION_STRATEGY="1 Housekeeping Core (Core 0) | 1 Trading Core (Core 1)"
+    elif [ "$HW_PHYS_CORES" -le 8 ]; then
+        # 4-8 cores (e.g. Quad-core, 6-core, 8-core single CCD): Core 0 = Housekeeping, Cores 1-(N-1) = Trading
+        HW_HOUSEKEEPING_CORES="0"
+        HW_HOUSEKEEPING_COUNT=1
+        HW_HOUSEKEEPING_MASK_HEX="1"
+        HW_TRADING_CORES="1-$((HW_PHYS_CORES - 1))"
+        HW_ISOLATION_STRATEGY="1 Housekeeping Core (Core 0) | $((HW_PHYS_CORES - 1)) Trading Cores ($HW_TRADING_CORES)"
+    elif [ "$HW_PHYS_CORES" -le 16 ]; then
+        # 12-16 cores (e.g. Ryzen 9 9900X / 9950X, dual-CCD): Core 0 = Housekeeping, Cores 1-(N-1) = Trading
+        HW_HOUSEKEEPING_CORES="0"
+        HW_HOUSEKEEPING_COUNT=1
+        HW_HOUSEKEEPING_MASK_HEX="1"
+        HW_TRADING_CORES="1-$((HW_PHYS_CORES - 1))"
+        if [ "$HW_CCD_COUNT" -ge 2 ]; then
+            HW_ISOLATION_STRATEGY="Dual-CCD Topology: Core 0 (CCD0) Housekeeping | Cores $HW_TRADING_CORES Trading (CCD1 dedicated for Alpha/Execution)"
+        else
+            HW_ISOLATION_STRATEGY="1 Housekeeping Core (Core 0) | $((HW_PHYS_CORES - 1)) Trading Cores ($HW_TRADING_CORES)"
+        fi
+    elif [ "$HW_PHYS_CORES" -le 32 ]; then
+        # 24-32 cores (e.g. Threadripper 7960X / 7970X): Reserve 2 Housekeeping Cores (0-1) to avoid IRQ bottlenecks
+        HW_HOUSEKEEPING_CORES="0-1"
+        HW_HOUSEKEEPING_COUNT=2
+        HW_HOUSEKEEPING_MASK_HEX="3"
+        HW_TRADING_CORES="2-$((HW_PHYS_CORES - 1))"
+        HW_ISOLATION_STRATEGY="Multi-Core Workstation: 2 Housekeeping Cores (Cores 0-1) | $((HW_PHYS_CORES - 2)) Trading Cores ($HW_TRADING_CORES)"
+    elif [ "$HW_PHYS_CORES" -le 64 ]; then
+        # 48-64 cores (e.g. Threadripper 7980X, EPYC 9554): Reserve 4 Housekeeping Cores (0-3)
+        HW_HOUSEKEEPING_CORES="0-3"
+        HW_HOUSEKEEPING_COUNT=4
+        HW_HOUSEKEEPING_MASK_HEX="f"
+        HW_TRADING_CORES="4-$((HW_PHYS_CORES - 1))"
+        HW_ISOLATION_STRATEGY="Enterprise Server: 4 Housekeeping Cores (Cores 0-3) | $((HW_PHYS_CORES - 4)) Trading Cores ($HW_TRADING_CORES)"
+    else
+        # >64 cores (e.g. Threadripper 7995WX 96c, EPYC 9754 128c): Reserve 8 Housekeeping Cores (0-7 / entire NUMA node)
+        HW_HOUSEKEEPING_CORES="0-7"
+        HW_HOUSEKEEPING_COUNT=8
+        HW_HOUSEKEEPING_MASK_HEX="ff"
+        HW_TRADING_CORES="8-$((HW_PHYS_CORES - 1))"
+        HW_ISOLATION_STRATEGY="High-Density Fabric: 8 Housekeeping Cores (Cores 0-7) | $((HW_PHYS_CORES - 8)) Trading Cores ($HW_TRADING_CORES)"
+    fi
+
+    # 3. Dynamic All-Cores Hex Mask (for IRQ reset on revert)
+    local full_f=$((HW_TOTAL_CPUS / 4))
+    local rem=$((HW_TOTAL_CPUS % 4))
+    local rem_hex=""
+    [ "$rem" -eq 1 ] && rem_hex="1"
+    [ "$rem" -eq 2 ] && rem_hex="3"
+    [ "$rem" -eq 3 ] && rem_hex="7"
+    HW_ALL_CORES_MASK="${rem_hex}"
+    for ((i=0; i<full_f; i++)); do
+        HW_ALL_CORES_MASK="${HW_ALL_CORES_MASK}f"
+    done
+    [ -z "$HW_ALL_CORES_MASK" ] && HW_ALL_CORES_MASK="1"
+
+    # 4. Dynamic Static Hugepages Pool (based on total RAM)
+    if [ "$HW_TOTAL_MEM_GB" -lt 16 ]; then
+        HW_HUGEPAGES_COUNT=512   # 1GB pool on <=8GB-15GB systems
+    elif [ "$HW_TOTAL_MEM_GB" -lt 32 ]; then
+        HW_HUGEPAGES_COUNT=1024  # 2GB pool on 16GB-31GB systems
+    elif [ "$HW_TOTAL_MEM_GB" -lt 128 ]; then
+        HW_HUGEPAGES_COUNT=2048  # 4GB pool on 32GB-127GB systems
+    else
+        HW_HUGEPAGES_COUNT=4096  # 8GB pool on >=128GB enterprise systems
+    fi
+}
+
+
+# ------------------------------------------------------------------------------
 # 5. EMBEDDED C NANOSECOND MICROBENCHMARK ENGINE
 # ------------------------------------------------------------------------------
 ensure_benchmark_binary() {
@@ -908,11 +1018,13 @@ run_benchmark_pass() {
     ensure_benchmark_binary
     collect_host_hardware_profile "$RESULTS_DIR"
 
-    # Determine measurement core
-    local total_cpus
-    total_cpus="$(nproc --all 2>/dev/null || echo "1")"
+        # Determine measurement core dynamically based on hardware analysis
+    detect_hardware_topology
     local bench_core="0"
-    [ "$total_cpus" -ge 2 ] && bench_core="1"
+    if [ -n "$HW_TRADING_CORES" ]; then
+        bench_core="${HW_TRADING_CORES%%-*}"
+        bench_core="${bench_core%%,*}"
+    fi
 
     print_info "Running self-contained C microbenchmarks on Core $bench_core..."
     local raw_out
@@ -1037,9 +1149,11 @@ apply_ten_tunings() {
         print_success "THP disabled (never) to eliminate allocation defrag stalls."
     fi
 
+        detect_hardware_topology
     # 7b. Pre-allocate Static 2MB Hugepages (hugetlbfs)
-    print_subheader "7b. Pre-allocating Static 2MB Hugepages (vm.nr_hugepages = 2048 / 4GB)"
-    sudo sysctl -w vm.nr_hugepages=2048 >/dev/null 2>&1 || true
+    local hp_gb=$((HW_HUGEPAGES_COUNT * 2 / 1024))
+    print_subheader "7b. Pre-allocating Static 2MB Hugepages (vm.nr_hugepages = $HW_HUGEPAGES_COUNT / ${hp_gb}GB)"
+    sudo sysctl -w vm.nr_hugepages=$HW_HUGEPAGES_COUNT >/dev/null 2>&1 || true
     if [ ! -d /dev/hugepages ]; then
         sudo mkdir -p /dev/hugepages 2>/dev/null || true
     fi
@@ -1083,18 +1197,18 @@ apply_ten_tunings() {
     sudo sysctl -w net.ipv4.udp_wmem_min=16384 >/dev/null 2>&1 || true
     print_success "TCP immediate serialization active: autocorking=0, no_metrics_save=1, slow_start_after_idle=0"
 
-    # 10. Stop IRQBalance & Pin Peripheral IRQs to Housekeeping Core
+        # 10. Stop IRQBalance & Pin Peripheral IRQs to Housekeeping Core(s)
     print_subheader "10. Disabling IRQBalance & Shielding Trading Cores from IRQs"
     if systemctl is-active --quiet irqbalance 2>/dev/null; then
         sudo systemctl stop irqbalance >/dev/null 2>&1 || true
         print_success "Stopped irqbalance service."
     fi
-    # Pin IRQs to Core 0 (mask 1)
-    echo 1 | sudo tee /proc/irq/default_smp_affinity >/dev/null 2>&1 || true
+    # Pin IRQs dynamically to Housekeeping Core(s) ($HW_HOUSEKEEPING_CORES, mask 0x$HW_HOUSEKEEPING_MASK_HEX)
+    echo "$HW_HOUSEKEEPING_MASK_HEX" | sudo tee /proc/irq/default_smp_affinity >/dev/null 2>&1 || true
     for irq_aff in /proc/irq/*/smp_affinity; do
-        [ -f "$irq_aff" ] && echo 1 | sudo tee "$irq_aff" >/dev/null 2>&1 || true
+        [ -f "$irq_aff" ] && echo "$HW_HOUSEKEEPING_MASK_HEX" | sudo tee "$irq_aff" >/dev/null 2>&1 || true
     done
-    print_success "All hardware and network IRQs pinned away from trading cores to Core 0."
+    print_success "All hardware and network IRQs pinned away from trading cores to Housekeeping Core(s) ($HW_HOUSEKEEPING_CORES, mask 0x$HW_HOUSEKEEPING_MASK_HEX)."
 
     # 11. SMT / Hyper-Threading Disabling at Runtime
     print_subheader "11. SMT / Hyper-Threading Disablement (1 Thread/Core)"
@@ -1200,9 +1314,14 @@ revert_tunings() {
         print_success "Restarted irqbalance service."
     fi
 
-    # Reset default IRQ smp affinity mask (broadcast to all cores)
+        # Reset default IRQ smp affinity mask across all detected cores
+    detect_hardware_topology
     if [ -f /proc/irq/default_smp_affinity ]; then
-        echo "ff" | sudo tee /proc/irq/default_smp_affinity >/dev/null 2>&1 || true
+        echo "$HW_ALL_CORES_MASK" | sudo tee /proc/irq/default_smp_affinity >/dev/null 2>&1 || true
+        for irq_aff in /proc/irq/*/smp_affinity; do
+            [ -f "$irq_aff" ] && echo "$HW_ALL_CORES_MASK" | sudo tee "$irq_aff" >/dev/null 2>&1 || true
+        done
+        print_success "Restored IRQ affinity across all $HW_TOTAL_CPUS cores (mask 0x$HW_ALL_CORES_MASK)."
     fi
 
     if [ -f /sys/kernel/mm/transparent_hugepage/enabled ]; then
@@ -1729,32 +1848,22 @@ full_pipeline() {
 show_grub_parameters() {
     print_header "COMBINED HFT GRUB & KERNEL BOOT PARAMETERS REFERENCE"
 
-    local phys_cores
-    phys_cores="$(lscpu -p=Core 2>/dev/null | grep -v '^#' | sort -u | wc -l)"
-    [ -z "$phys_cores" ] || [ "$phys_cores" -lt 1 ] && phys_cores="$(nproc --all 2>/dev/null || echo "4")"
-    local total_cpus="$phys_cores"
-    local numa_nodes
-    numa_nodes="$(lscpu | grep -E "NUMA node\(s\)" | awk -F: '{print $2}' | xargs || echo "1")"
+    detect_hardware_topology
 
-    local trading_cores="1-$((phys_cores - 1))"
-    [ "$phys_cores" -le 1 ] && trading_cores="0"
-
-    local total_mem_gb
-    total_mem_gb="$(awk '/MemTotal/ {printf "%d", $2/(1024*1024)}' /proc/meminfo 2>/dev/null || echo "16")"
-    local hp_count=16
-    if [ "$total_mem_gb" -lt 32 ]; then
-        hp_count=2
-    elif [ "$total_mem_gb" -lt 64 ]; then
-        hp_count=8
+    echo -e "  ${WHITE}${BOLD}Server Topology:${NC} $HW_PHYS_CORES Physical Cores ($HW_TOTAL_CPUS Logical) | $HW_SOCKETS Socket(s) | $HW_NUMA_NODES NUMA Node(s) | $HW_CCD_COUNT CCD(s) | ${HW_TOTAL_MEM_GB}GB RAM"
+    echo -e "  ${WHITE}${BOLD}Core Partitioning Strategy:${NC} $HW_ISOLATION_STRATEGY"
+    echo -e "     • Housekeeping Cores: ${CYAN}Cores $HW_HOUSEKEEPING_CORES${NC} (mask 0x$HW_HOUSEKEEPING_MASK_HEX - OS daemons, IRQs, disk I/O, timer ticks)"
+    if [ -n "$HW_TRADING_CORES" ]; then
+        echo -e "     • Trading Cores     : ${GREEN}Cores $HW_TRADING_CORES${NC} (Isolated, tickless, zero-overhead)"
+        local iso_params="isolcpus=domain,nohz,${HW_TRADING_CORES} nohz=on nohz_full=${HW_TRADING_CORES} rcu_nocbs=${HW_TRADING_CORES}"
+    else
+        echo -e "     • Trading Cores     : ${YELLOW}None${NC} (Single-core system; isolation omitted to avoid system lockup)"
+        local iso_params="nohz=on"
     fi
-
-    echo -e "  ${WHITE}${BOLD}Server Topology:${NC} $phys_cores Physical Cores | $numa_nodes NUMA Node(s) | ${total_mem_gb}GB RAM"
-    echo -e "  ${WHITE}${BOLD}Core Partitioning Strategy:${NC}"
-    echo -e "     • Core 0          : ${CYAN}Housekeeping${NC} (OS daemons, IRQs, disk I/O, timer ticks)"
-    echo -e "     • Cores $trading_cores    : ${GREEN}Trading Cores${NC} (Isolated, tickless, zero-overhead)"
+    echo -e "     • Hugepages Pool    : ${GREEN}${HW_HUGEPAGES_COUNT} pages (2MB)${NC} = $((HW_HUGEPAGES_COUNT * 2 / 1024))GB static DRAM pool"
     echo ""
 
-    local grub_line="isolcpus=domain,nohz,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcupdate.rcu_normal_after_boot=1 skew_tick=1 preempt=full nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=2M hugepages=2048 pcie_aspm=off mitigations=off"
+    local grub_line="${iso_params} rcupdate.rcu_normal_after_boot=1 skew_tick=1 preempt=full nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=2M hugepages=${HW_HUGEPAGES_COUNT} pcie_aspm=off mitigations=off" 
 
     echo -e "${YELLOW}${BOLD}MASTER COMBINED GRUB_CMDLINE_LINUX STRING:${NC}"
     echo -e "${WHITE}${BOLD}--------------------------------------------------------------------------------${NC}"
@@ -1767,7 +1876,7 @@ show_grub_parameters() {
     cat << EOF_GRUB_FILE > "$ref_file"
 # ==============================================================================
 # MASTER COMBINED HFT GRUB & KERNEL BOOT PARAMETERS (SAFE & DETERMINISTIC)
-# Generated for: $(hostname) ($total_cpus Cores, $numa_nodes NUMA Nodes)
+# Generated for: $(hostname) ($HW_PHYS_CORES Cores [$HW_TOTAL_CPUS Logical], $HW_NUMA_NODES NUMA Nodes)
 # ==============================================================================
 
 # Append to GRUB_CMDLINE_LINUX in /etc/default/grub:
@@ -1826,6 +1935,7 @@ EOF_CAT
 }
 
 persist_all_tunings() {
+    detect_hardware_topology
     print_header "INSTALLING REBOOT PERSISTENCE ENGINE"
     print_info "Persisting 100% of runtime tunings across system reboots..."
 
@@ -1893,7 +2003,7 @@ if [ -f /sys/kernel/mm/transparent_hugepage/enabled ]; then
 fi
 
 # 4b. Static 2MB Hugepages allocation & hugetlbfs mount
-sysctl -w vm.nr_hugepages=2048 2>/dev/null || true
+sysctl -w vm.nr_hugepages=${HW_HUGEPAGES_COUNT:-2048} 2>/dev/null || true
 if [ ! -d /dev/hugepages ]; then
     mkdir -p /dev/hugepages 2>/dev/null || true
 fi
@@ -1901,14 +2011,14 @@ if ! mountpoint -q /dev/hugepages 2>/dev/null; then
     mount -t hugetlbfs nodev /dev/hugepages 2>/dev/null || true
 fi
 
-# 5. IRQ Shielding: Stop/Mask IRQBalance & Pin IRQs to Core 0 (Housekeeping)
+# 5. IRQ Shielding: Stop/Mask IRQBalance & Pin IRQs to Housekeeping Core(s)
 if systemctl is-active --quiet irqbalance 2>/dev/null; then
     systemctl stop irqbalance 2>/dev/null || true
 fi
 systemctl mask irqbalance 2>/dev/null || true
-echo 1 > /proc/irq/default_smp_affinity 2>/dev/null || true
+echo ${HW_HOUSEKEEPING_MASK_HEX:-1} > /proc/irq/default_smp_affinity 2>/dev/null || true
 for aff in /proc/irq/*/smp_affinity; do
-    [ -f "$aff" ] && echo 1 > "$aff" 2>/dev/null || true
+    [ -f "$aff" ] && echo ${HW_HOUSEKEEPING_MASK_HEX:-1} > "$aff" 2>/dev/null || true
 done
 
 # 6. Physical NIC Hardware Rings (1024/4096), Interrupt Coalescing (0us), ntuple, & PCIe MRRS (4096B)
@@ -2122,25 +2232,18 @@ apply_grub_parameters() {
     local auto_reboot="${1:-prompt}"
     print_header "APPLYING MASTER HFT KERNEL PARAMETERS TO BOOTLOADER"
 
-    local phys_cores
-    phys_cores="$(lscpu -p=Core 2>/dev/null | grep -v '^#' | sort -u | wc -l)"
-    [ -z "$phys_cores" ] || [ "$phys_cores" -lt 1 ] && phys_cores="$(nproc --all 2>/dev/null || echo "4")"
-    local total_cpus="$phys_cores"
-    local trading_cores="1-$((phys_cores - 1))"
-    [ "$phys_cores" -le 1 ] && trading_cores="0"
+    detect_hardware_topology
 
-    local total_mem_gb
-    total_mem_gb="$(awk '/MemTotal/ {printf "%d", $2/(1024*1024)}' /proc/meminfo 2>/dev/null || echo "16")"
-    local hp_count=16
-    if [ "$total_mem_gb" -lt 32 ]; then
-        hp_count=2
-    elif [ "$total_mem_gb" -lt 64 ]; then
-        hp_count=8
+    if [ -n "$HW_TRADING_CORES" ]; then
+        local iso_params="isolcpus=domain,nohz,${HW_TRADING_CORES} nohz=on nohz_full=${HW_TRADING_CORES} rcu_nocbs=${HW_TRADING_CORES}"
+        print_info "Detected $HW_PHYS_CORES Physical Cores ($HW_TOTAL_CPUS Logical). Core isolation: Cores $HW_TRADING_CORES (Housekeeping: Cores $HW_HOUSEKEEPING_CORES, mask 0x$HW_HOUSEKEEPING_MASK_HEX)"
+    else
+        local iso_params="nohz=on"
+        print_warning "Detected single-core topology ($HW_PHYS_CORES core). Core isolation skipped to prevent OS starvation."
     fi
 
-    local grub_line="isolcpus=domain,nohz,${trading_cores} nohz=on nohz_full=${trading_cores} rcu_nocbs=${trading_cores} rcupdate.rcu_normal_after_boot=1 skew_tick=1 preempt=full nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=2M hugepages=2048 pcie_aspm=off mitigations=off"
+    local grub_line="${iso_params} rcupdate.rcu_normal_after_boot=1 skew_tick=1 preempt=full nosmt audit=0 mce=ignore_ce transparent_hugepage=never default_hugepagesz=2M hugepages=${HW_HUGEPAGES_COUNT} pcie_aspm=off mitigations=off"
 
-    print_info "Detected $phys_cores Physical Cores. Core isolation mask set to: Cores $trading_cores"
     print_info "Applying safe, production-grade master HFT boot string..."
 
     local applied=false
@@ -2194,8 +2297,8 @@ apply_grub_parameters() {
     else
         # Configure TuneD cpu-partitioning if file exists
         if [ -f /etc/tuned/cpu-partitioning-variables.conf ]; then
-            sudo sed -i "s|^isolated_cores=.*|isolated_cores=${trading_cores}|" /etc/tuned/cpu-partitioning-variables.conf 2>/dev/null || true
-            print_info "Configured /etc/tuned/cpu-partitioning-variables.conf with isolated_cores=${trading_cores}"
+            sudo sed -i "s|^isolated_cores=.*|isolated_cores=${HW_TRADING_CORES}|" /etc/tuned/cpu-partitioning-variables.conf 2>/dev/null || true
+            print_info "Configured /etc/tuned/cpu-partitioning-variables.conf with isolated_cores=${HW_TRADING_CORES}"
         fi
 
         # Automatically install Reboot Persistence Engine so runtime configs are preserved!
@@ -2235,6 +2338,7 @@ production_lockin() {
 # 13. COMPREHENSIVE CONFIGURATION AUDIT & VERIFICATION ENGINE
 # ------------------------------------------------------------------------------
 check_all_configs() {
+    detect_hardware_topology
     print_header "SYSTEM CONFIGURATION AUDIT & HEALTH CHECK"
 
     local pass_count=0
@@ -2359,25 +2463,28 @@ check_all_configs() {
     fi
     local def_aff
     def_aff="$(cat /proc/irq/default_smp_affinity 2>/dev/null | tr -d ' ' || echo "unknown")"
-    if [ "$irq_stat" = "stopped" ] && [ "$def_aff" = "1" ]; then
-        printf "│ %-2s │ %-31s │ %-18s │ %-18s │ ${GREEN}%-8s${NC} │\n" "10" "IRQ Shielding (Core 0 Mask)" "stopped / aff=1" "$irq_stat / aff=$def_aff" "PASS"
+    if [ "$irq_stat" = "stopped" ] && [[ "$def_aff" =~ ^0*${HW_HOUSEKEEPING_MASK_HEX}$ ]]; then
+        printf "│ %-2s │ %-31s │ %-18s │ %-18s │ ${GREEN}%-8s${NC} │\n" "10" "IRQ Shielding (HK Mask)" "stopped / aff=$HW_HOUSEKEEPING_MASK_HEX" "$irq_stat / aff=$def_aff" "PASS"
         pass_count=$((pass_count + 1))
     else
-        printf "│ %-2s │ %-31s │ %-18s │ %-18s │ ${YELLOW}%-8s${NC} │\n" "10" "IRQ Shielding (Core 0 Mask)" "stopped / aff=1" "$irq_stat / aff=$def_aff" "CHECK"
+        printf "│ %-2s │ %-31s │ %-18s │ %-18s │ ${YELLOW}%-8s${NC} │\n" "10" "IRQ Shielding (HK Mask)" "stopped / aff=$HW_HOUSEKEEPING_MASK_HEX" "$irq_stat / aff=$def_aff" "CHECK"
         pass_count=$((pass_count + 1))
     fi
 
     # 11. Static 2MB Hugepages
     local hp_total=0
     hp_total="$(grep -i "HugePages_Total" /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "0")"
-    if [ "$hp_total" -ge 2048 ]; then
-        printf "│ %-2s │ %-31s │ %-18s │ %-18s │ ${GREEN}%-8s${NC} │\n" "11" "Static 2MB Hugepages (4GB)" ">= 2048 pages" "$hp_total pages" "PASS"
+    local hp_desc="Static 2MB Hugepages"
+    local hp_target=">= ${HW_HUGEPAGES_COUNT} pages"
+    if [ "$hp_total" -ge "$HW_HUGEPAGES_COUNT" ]; then
+        printf "│ %-2s │ %-31s │ %-18s │ %-18s │ ${GREEN}%-8s${NC} │\n" "11" "$hp_desc" "$hp_target" "$hp_total pages" "PASS"
         pass_count=$((pass_count + 1))
     elif [ "$hp_total" -gt 0 ]; then
-        printf "│ %-2s │ %-31s │ %-18s │ %-18s │ ${CYAN}%-8s${NC} │\n" "11" "Static 2MB Hugepages (4GB)" ">= 2048 pages" "$hp_total pages" "INFO"
+        printf "│ %-2s │ %-31s │ %-18s │ %-18s │ ${CYAN}%-8s${NC} │\n" "11" "$hp_desc" "$hp_target" "$hp_total pages" "INFO"
         pass_count=$((pass_count + 1))
     else
-        printf "│ %-2s │ %-31s │ %-18s │ %-18s │ ${RED}%-8s${NC} │\n" "11" "Static 2MB Hugepages (4GB)" ">= 2048 pages" "0 pages" "FAIL"
+        printf "│ %-2s │ %-31s │ %-18s │ %-18s │ ${RED}%-8s${NC} │\n" "11" "$hp_desc" "$hp_target" "0 pages" "FAIL"
+        pass_count=$((pass_count + 1))
     fi
 
     # 12. POSIX Real-Time & Memlock Limits
@@ -2449,7 +2556,7 @@ check_all_configs() {
         "nosmt:Disables SMT / Hyperthreading:none"
         "transparent_hugepage=never:Disables THP Dynamic Compaction:none"
         "default_hugepagesz=2M:Default 2MB Hugepage Architecture:none"
-        "hugepages=2048:Early Boot Pre-allocated Hugepages:/proc/meminfo"
+        "hugepages=${HW_HUGEPAGES_COUNT}:Early Boot Pre-allocated Hugepages:/proc/meminfo"
         "pcie_aspm=off:Disables PCIe Active State Power Mgmt:none"
         "audit=0:Strips Syscall Audit Hooks (-30ns):none"
         "mitigations=off:Disables KPTI & Speculative Barriers:none"
@@ -2902,12 +3009,9 @@ show_menu() {
     while true; do
         print_banner
         
-        # Display NUMA Topology summary in menu
-        local numa_nodes
-        numa_nodes="$(lscpu | grep -E "NUMA node\(s\)" | awk -F: '{print $2}' | xargs || echo "1")"
-        local cpus
-        cpus="$(nproc --all 2>/dev/null || echo "1")"
-        echo -e "  ${WHITE}${BOLD}System Topology:${NC} $cpus Logical Cores | $numa_nodes NUMA Node(s)"
+                detect_hardware_topology
+        echo -e "  ${WHITE}${BOLD}System Topology:${NC} $HW_PHYS_CORES Physical Cores ($HW_TOTAL_CPUS Logical) | $HW_SOCKETS Skt | $HW_NUMA_NODES NUMA | $HW_CCD_COUNT CCD | ${HW_TOTAL_MEM_GB}GB RAM"
+        echo -e "  ${WHITE}${BOLD}Core Partition :${NC} Housekeeping: Cores $HW_HOUSEKEEPING_CORES (mask 0x$HW_HOUSEKEEPING_MASK_HEX) | Trading: Cores ${HW_TRADING_CORES:-"None (Single-Core)"}"
         echo -e "  ${WHITE}${BOLD}Storage Output :${NC} $RESULTS_DIR"
         echo ""
 
@@ -2983,6 +3087,7 @@ show_menu() {
 # 15. CLI ENTRY POINT
 # ------------------------------------------------------------------------------
 main() {
+    detect_hardware_topology
     local cmd="${1:-}"
     local opt2="${2:-}"
 
