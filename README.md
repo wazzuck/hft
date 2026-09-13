@@ -297,14 +297,53 @@ Understanding how L1, L2, and L3 caches attach to cores across NUMA nodes is cri
 │ ║   └─────────────────────────────┘   ║                                 │
 │ ╚═════════════════════════════════════╝                                 │
 │                                                                         │
-│ CACHE TOPOLOGY BREAKDOWN:                                               │
-│ • L1i / L1d (~1 ns / ~4-5 cycles): Private to each individual core.     │
-│ • L2 Cache (~3-4 ns / ~14 cycles): Private 1MB per core.                │
-│ • L3 Cache (~10-12 ns / ~45 cycles): Shared across 8 cores in the CCD.  │
+│ CACHE TOPOLOGY BREAKDOWN (Physical Core vs. SMT Sibling Threads):        │
+│ • L1i/L1d (~1 ns): Private per core (Zen 5: 48KB L1d; Zen 4: 32KB L1d). │
+│   [!] SHARED between SMT sibling threads on the same physical core!     │
+│ • L2 Cache (~3-4 ns / ~14 cycles): Private 1MB per physical core.        │
+│   [!] SHARED between SMT sibling threads on the same physical core!     │
+│ • L3 Cache (~10-12 ns): Shared across all cores in CCD (32MB / 96MB).   │
 │ • Local DDR5 Memory (~75 ns): Routed via local NUMA memory channels.    │
 │ • Remote NUMA Memory (~160+ ns): Crosses Infinity Fabric / UPI bus.     │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+
+##### 🧵 Simultaneous Multithreading (SMT): Which Caches Are Shared vs. Totally Private?
+
+On modern multi-core processors (such as AMD Zen 5 / Zen 4 or Intel Xeon), **Simultaneous Multithreading (SMT)**—often referred to as Hyper-Threading—exposes **two logical threads (virtual cores) per physical core**.
+
+A widespread and dangerous misconception in latency engineering is assuming that each logical thread has its own dedicated L1 or L2 cache. **They do not.**
+
+> [!CAUTION]
+> **No CPU caches are private between threads running on the same physical core.**  
+> When SMT is enabled, **every single level of the cache hierarchy (L1i, L1d, L2, and L3) is shared** between sibling threads. The only hardware resources that are totally private to an individual thread are architectural CPU registers.
+
+---
+
+#### Detailed Hardware & Cache Sharing Matrix
+
+| CPU Hardware Resource | Between SMT Siblings *(Same Physical Core)* | Between Different Physical Cores *(Same CCD)* | Between Different CCDs / Sockets *(Cross-NUMA)* |
+| :--- | :--- | :--- | :--- |
+| **Architectural Registers** (`RAX`, `RIP`, `RSP`, Vector `AVX-512`/`ZMM`) | **TOTALLY PRIVATE** | **TOTALLY PRIVATE** | **TOTALLY PRIVATE** |
+| **L1 Instruction Cache (L1i)** *(32 KB)* | **SHARED** *(Competitively partitioned)* | **TOTALLY PRIVATE** | **TOTALLY PRIVATE** |
+| **L1 Data Cache (L1d)** *(48 KB Zen 5 / 32 KB Zen 4)* | **SHARED** *(Competitively shared — evicts lines!)* | **TOTALLY PRIVATE** | **TOTALLY PRIVATE** |
+| **L2 Cache** *(1 MB 16-way per core)* | **SHARED** *(Both threads contend for 1 MB)* | **TOTALLY PRIVATE** | **TOTALLY PRIVATE** |
+| **L3 Cache** *(32 MB per CCD / 96 MB on X3D)* | **SHARED** | **SHARED** *(Across all 8 cores in CCD)* | **TOTALLY PRIVATE** *(Isolated per CCD)* |
+| **Execution Units** *(ALUs, FPUs, Branch Predictor)* | **SHARED** *(Dynamically multiplexed)* | **TOTALLY PRIVATE** | **TOTALLY PRIVATE** |
+| **TLB & Load/Store Queues** | **SHARED** *(Partitioned or tagged)* | **TOTALLY PRIVATE** | **TOTALLY PRIVATE** |
+
+---
+
+#### Why SMT Is Fatal to Deterministic HFT Latency
+
+1. **Cache Crosstalk & Eviction**:
+   - If Thread 0 (your critical trading engine) and Thread 1 (a sibling thread, such as a background logger, garbage collection worker, or kernel task) run on the same physical core, they read and write to the **exact same 48 KB L1 Data SRAM and 1 MB L2 cache**.
+   - Sibling thread memory accesses continuously displace your warm order book structures, market data ring buffers, and network packet headers from L1 and L2.
+2. **Real-Time Thrashing (Zero Context Switches Needed)**:
+   - Unlike process context switching—where cache eviction occurs sequentially when the OS pauses one process to schedule another—**SMT sibling threads run simultaneously in hardware**. Thread 1 continuously displaces L1/L2 cache lines and steals execution pipeline issue slots *in real time while your trading loop is attempting to process incoming market ticks*.
+3. **The HFT Fix: Disable SMT (`nosmt`)**:
+   - Our tuning suite disables SMT at the kernel boot level (`nosmt` in GRUB) and firmware level (`SMT Control: Disabled` in BIOS).
+   - With SMT disabled, **100% of the 48 KB L1d, 32 KB L1i, 1 MB L2 cache, all TLBs, and all execution ports become TOTALLY PRIVATE** and exclusively dedicated to your isolated trading algorithm.
 
 ##### ⚠️ Does Context Switching "Flush" the Cache? The Technical Reality
 
@@ -312,19 +351,24 @@ In low-latency engineering, you will frequently hear that *"context switching fl
 
 **Technically**, the CPU hardware does **not** execute an explicit cache-invalidation instruction (such as `wbinvd` or `clflush`) during an OS process context switch. **Practically**, however, context switching inflicts the exact same devastating latency penalty through **cache eviction, cache pollution, and TLB displacement**:
 
-1. **L1/L2 Cache Eviction & Working-Set Pollution**:
-   - L1 Data (32–48 KB) and L2 (1 MB) caches are small, high-speed set-associative hardware buffers.
+1. **L1, L2, & L3 Cache Eviction & Working-Set Pollution**:
+   - Modern state-of-the-art AMD Ryzen processors (Zen 5 architectures like the Ryzen 9 9950X / 9900X, as well as Zen 4 and X3D variants) employ a multi-tier cache hierarchy:
+     - **L1 Data Cache (48 KB 12-way per core on Zen 5; 32 KB 8-way on Zen 4)**: The fastest buffer (~1 ns / ~4–5 cycles) per physical core. *(Shared between SMT sibling threads if SMT is enabled).* (L1 Instruction is 32 KB 8-way per core).
+     - **L2 Cache (1 MB 16-way per physical core)**: Dedicated hardware cache per physical core (~3–4 ns / ~14 cycles). *(Shared between SMT sibling threads if SMT is enabled).*
+     - **L3 Cache (32 MB 16-way shared per 8-core CCD; 96 MB on 3D V-Cache / X3D chips)**: Shared pool across the cores of a Core Complex Die (~10–12 ns / ~45–55 cycles). On dual-CCD flagships like the 16-core Ryzen 9 9950X, this totals 64 MB of L3 (2x 32 MB), or up to 128 MB on dual-CCD X3D chips.
    - When the Linux scheduler switches out your trading thread to service an interrupt, kernel worker (`khugepaged`, `ksoftirqd`), or background daemon, that foreign task immediately loads its own instruction pages, stack frames, and variables into cache lines.
-   - This **evicts (displaces)** your hot order book structures, circular ring buffers, and network descriptors from the private L1/L2 caches.
+   - This **evicts (displaces)** your hot order book structures, circular ring buffers, and network descriptors from private L1/L2 caches. Furthermore, memory-heavy kernel routines and background tasks pollute the shared L3 cache sets, evicting warm market data across the entire CCD.
 2. **TLB Invalidation (`CR3` Page Directory Base Register Reload)**:
    - When switching between processes, the CPU must reload the `CR3` control register with the incoming process's Page Global Directory.
    - Although modern x86 processors support PCID (Process Context Identifiers) to preserve tagged entries, TLB capacity is strictly limited. The foreign process quickly displaces translation entries, forcing costly 4-level page table walks (~400 ns) when your trading thread resumes.
 3. **The Pipeline Stall Penalty (1 ns vs 160 ns)**:
    - When your trading loop gets CPU time again, its next memory reads face a **cold cache penalty**.
-   - Instead of reading the order book at **~1 ns** from L1, the CPU stalls for **~10–12 ns** (L3 hit) or **~75–160 ns** (DRAM fetch). On a 5.0 GHz processor, a 160 ns stall burns **800 CPU clock cycles** during which your execution engine cannot process incoming market ticks.
-4. **Thread Migration Disaster (Cross-Core & Cross-NUMA)**:
-   - If CFS migrates your trading thread to another core on the same CCD: private L1 and L2 caches are completely cold.
-   - If CFS migrates your thread to a **different NUMA node**: even L3 is cold, and all existing heap allocations now incur the **~160 ns remote NUMA memory penalty** over the Infinity Fabric / UPI bus.
+   - Instead of reading the order book at **~1 ns** from L1d or **~3–4 ns** from L2, an L3 hit stalls for **~10–12 ns**, while an L3 miss stalls for **~75 ns** (local DDR5 DRAM) or **~140–180 ns** (remote NUMA / cross-CCD fetch across the AMD Infinity Fabric). On a 5.7 GHz Ryzen 9 9950X, a 160 ns stall burns over **900 CPU clock cycles** during which your execution engine cannot process incoming market ticks.
+4. **Thread Migration Disaster (Cross-Core, Cross-CCD & Cross-NUMA)**:
+   - State-of-the-art Ryzen processors feature a chiplet architecture with Core Complex Dies (CCDs) connected via the AMD Infinity Fabric to an I/O Die (IOD):
+     - **Migration to a Sibling Core on the SAME CCD**: Private L1 (48 KB) and L2 (1 MB) caches are completely cold. The thread can only fall back to the shared 32 MB (or 96 MB on X3D) L3 cache slice (~10–12 ns).
+     - **Cross-CCD Migration (Core on CCD0 $\rightarrow$ Core on CCD1)**: The ultimate cache disaster. Because each CCD possesses its own distinct L3 cache pool, **L1, L2, and L3 caches are all completely cold**. The thread loses its entire warm cache footprint. Every memory access must traverse the AMD Infinity Fabric interconnect to the memory controller, incurring severe latency penalties (~75–140+ ns).
+     - **Cross-NUMA Migration**: On multi-socket or multi-NUMA server platforms, thread migration forces all heap allocations to cross external UPI / Infinity Fabric links, adding a **~160+ ns remote NUMA memory penalty**.
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -338,7 +382,7 @@ In low-latency engineering, you will frequently hear that *"context switching fl
 │ Tick arrives ──> L1 Miss (~1 ns)                                        │
 │               └──> L2 Miss (~4 ns)                                      │
 │                     └──> L3 Miss (~12 ns)                               │
-│                           └──> Remote DRAM Fetch (~160 ns / 800 cycles!)│
+│                           └──> Remote DRAM Fetch (~160 ns / 900 cycles!)│
 │                                 └──> Order Arrives Late (TICK MISSED)   │
 │                                                                         │
 │ SUITE MITIGATIONS:                                                      │
@@ -534,65 +578,137 @@ The Supermicro H13SRD-F organizes AMD Ryzen AM5 server options cleanly into dedi
 
 ---
 
-### 3. Step-by-Step Keystroke Walkthrough for Supermicro H13SRD-F
+### 3. Step-by-Step Keystroke Walkthrough & Engineering Rationale
 
-Follow these exact keystroke sequences mapped directly to the Supermicro H13SRD-F firmware menus:
+Follow these exact keystroke sequences mapped directly to the Supermicro H13SRD-F firmware menus. Every setting pairs its exact BIOS menu location and keystroke sequence with its low-level hardware mechanism, default failure mode, and low-latency HFT rationale, with all hardware acronyms fully defined.
 
 #### Menu 1: Advanced → CPU Configuration (C-States, Frequency Determinism, SMT)
-*Navigates to the core processor architecture controls for the AMD Ryzen 9 9900X (12-core, Zen 5).*
+*Navigates to the core processor architecture controls for the AMD Ryzen 9 9900X / 9950X (Zen 5 microarchitecture).*
 
 1. At the top navigation bar, press `[→]` to highlight **`Advanced`**.
 2. Press `[↓]` to select **`CPU Configuration`**, then press `[Enter]`.
 3. Configure the following settings:
-   - **Global C-state Control** → Select **`[Disabled]`**  
-     *Prevents Zen 5 cores and Data Fabric (DF) from entering low-power idle states (C1/C2). Cores remain permanently active in C0 with 0ns wake latency.*
-   - **PSS Support** → Select **`[Disabled]`**  
-     *Disables ACPI `_PSS` dynamic performance state tables. Eliminates opportunistic frequency/voltage scaling, enforcing deterministic execution frequency.*
-   - **SMT Control** → Select **`[Disabled]`**  
-     *Disables Simultaneous Multi-Threading (Hyper-Threading). Eliminates L1/L2 cache and execution pipeline thrashing from sibling threads. Yields 12 dedicated physical cores.*
-   - **Core Performance Boost** → Select **`[Disabled]`**  
-     *Disables dynamic Core Performance Boost (CPB/Turbo). Eliminates phase-locked loop (PLL) relocking latency and thermal frequency throttling across cores.*
-   - **NX Mode** → Keep **`[Enabled]`** *(No-Execute memory protection)*
-   - **SVM Mode** → Keep **`[Enabled]`** *(Secure Virtual Machine)*
+
+   ##### • Global C-state Control (CPU Core Power States) → Select `[Disabled]` *(Default: `[Enabled]` / `[Auto]`)*
+   * **Acronym Meaning:** In the ACPI (Advanced Configuration and Power Interface) specification, the **"C" in C-State stands for CPU Core Power State** (or Processor Idle Sleep State), contrasting with P-States (Performance States) and S-States (System Sleep States). $C_0$ is the operational state (CPU executing instructions), while $C_1$ through $C_6$ represent progressively deeper power-saving sleep modes.
+   * **What it's doing:** Controls autonomous hardware power-saving idle states ($C_1$ Halt, $C_{1E}$ Enhanced Halt, $C_6$ Deep Power Down). When execution pipelines stall or the operating system issues an `MWAIT`/`HLT` instruction during quiet market periods, the CPU power control unit drops core voltage ($V_{core}$) near 0V, gates the high-frequency clock generator, and flushes pipeline execution state.
+   * **Why the default is bad (The Latency Killer):** In quantitative trading, market events arrive in stochastic, bursty cascades. A symbol can experience silence for hundreds of microseconds, followed by an immediate quote sweep. If the core dropped into deep sleep ($C_6$) during that lull, waking up back to $C_0$ requires ramping voltage regulators and relocking the Phase-Locked Loop (PLL). This incurs a **50 µs to 150 µs wakeup penalty ($t_{wake}$)** during which your algorithm cannot process incoming market data.
+   * **Why the new value is good (The Fix):** Forces all Zen 5 cores and the Data Fabric (DF) to remain permanently locked in the **$C_0$ active state 100% of the time**. Voltage rails stay energized, clocks never gate, and wakeup latency is eliminated (**0 ns wake penalty**). When packet DMA arrives, the core begins instruction execution on the very next CPU clock cycle.
+
+   ##### • PSS Support (Performance Supported States / ACPI P-States) → Select `[Disabled]` *(Default: `[Enabled]`)*
+   * **Acronym Meaning:** **PSS** stands for **Performance Supported States** (ACPI `_PSS`), which defines the operating frequency and voltage scaling tables (P-States, where $P_0$ is maximum frequency and $P_1 \dots P_n$ are downclocked power-saving states).
+   * **What it's doing:** Directs UEFI (Unified Extensible Firmware Interface) firmware to construct and export ACPI `_PSS` and `_PCT` (Performance Control) description tables to the operating system. These tables inform the Linux kernel CPU frequency governor (`schedutil`, `ondemand`) of valid voltage/frequency operational points.
+   * **Why the default is bad (The Latency Killer):** Under default settings, the OS dynamically lowers core clock speeds (e.g., dropping from 4.3 GHz down to 2.2 GHz) during periods of lower perceived utilization. When trading volume surges, the OS governor requires multiple sampling windows (10–20 ms) to detect the load and request a frequency ramp. In that window, your order execution logic processes packets at half speed. Furthermore, frequency scaling causes clock phase drift and variable instruction execution timing.
+   * **Why the new value is good (The Fix):** Strips dynamic scaling tables from the ACPI interface. The kernel is physically barred from requesting lower frequency states, locking the processor at its maximum deterministic base frequency. Every instruction cycle takes a fixed, predictable time, eliminating clock drift jitter.
+
+   ##### • SMT Control (Simultaneous Multi-Threading) → Select `[Disabled]` *(Default: `[Auto]` / `[Enabled]`)*
+   * **Acronym Meaning:** **SMT** stands for **Simultaneous Multi-Threading** (AMD's implementation of hardware multithreading, analogous to Intel's Hyper-Threading).
+   * **What it's doing:** Exposes two logical execution contexts (hardware threads) per physical Zen 5 core by duplicating architectural register files while sharing the single physical execution engine, execution ports, and cache hierarchy.
+   * **Why the default is bad (The Latency Killer):**
+     1. **L1d & L2 Cache Eviction:** Both threads share the identical physical **48 KB L1 Data (L1d) cache and 1 MB L2 cache**. A non-trading thread (e.g. OS background worker, logging task) running on the sibling thread actively evicts your trading loop's hot order book lines and ring buffer pointers from L1 and L2 in real time.
+     2. **Pipeline Resource Starvation:** SMT dynamically multiplexes execution ports and ALUs (Arithmetic Logic Units). If the sibling thread issues instructions, the trading loop's execution is stalled at the issue queue, causing unpredictable microsecond latency spikes.
+   * **Why the new value is good (The Fix):** Disabling SMT ensures that **100% of the 48 KB L1d cache, 32 KB L1i (L1 Instruction) cache, 1 MB L2 cache, all TLBs (Translation Lookaside Buffers), and all execution units are TOTALLY PRIVATE** and exclusively dedicated to your pinned trading algorithm. Cache thrashing and pipeline resource contention between sibling threads are physically eliminated. Yields 12 dedicated physical cores on the 9900X (or 16 on the 9950X).
+
+   ##### • Core Performance Boost (CPB / AMD Precision Boost) → Select `[Disabled]` *(Default: `[Auto]` / `[Enabled]`)*
+   * **Acronym Meaning:** **CPB** stands for **Core Performance Boost** (AMD's commercial implementation of opportunistic dynamic turbo overclocking, also known as Precision Boost).
+   * **What it's doing:** AMD's autonomous dynamic overclocking algorithm. Precision Boost constantly monitors thermal headroom, VRM (Voltage Regulator Module) currents (TDC: Thermal Design Current / EDC: Electrical Design Current), and package power (PPT: Package Power Tracking), dynamically pushing individual core frequencies above base clock (e.g., from 4.30 GHz up to 5.70 GHz).
+   * **Why the default is bad (The Latency Killer):**
+     1. **PLL Relocking Pauses:** Every time the boost controller switches multipliers between frequencies, the internal Phase-Locked Loop (PLL) must relock, pausing instruction issue for tens of microseconds.
+     2. **Thermal Downclocking Under Load:** When a market cascade occurs and multiple cores wake up, aggregate thermal and current budgets are exceeded. The CPU suddenly downclocks all cores (e.g., from 5.7 GHz down to 4.4 GHz). The algorithm runs fast during trivial market moments, but gets throttled and slowed down precisely during peak market volatility when speed matters most.
+   * **Why the new value is good (The Fix):** Locks the processor into a constant, immovable base frequency (e.g., 4.30 GHz flat). Every clock cycle takes an identical **0.232 ns**. There is **0.000% clock drift, zero PLL relocking pause, and zero thermal downclocking**, transforming an unpredictable latency distribution with fat tails into a razor-sharp deterministic spike.
+
+   ##### • SVM Mode (Secure Virtual Machine / AMD-V) → Keep `[Enabled]` *(for development / testbed VMs)* or `[Disabled]` *(bare-metal production)*
+   * **Acronym Meaning:** **SVM** stands for **Secure Virtual Machine** (AMD's hardware virtualization extensions, commercially known as AMD-V).
+   * **What it's doing:** Enables the AMD-V hardware virtualization instruction set (`VMRUN`, `VMLOAD`, Nested Page Tables) for hypervisor-assisted virtualization.
+   * **Why the default / tuned value:** On bare-metal production trading nodes running directly on physical hardware, disabling SVM eliminates virtualization microcode paths. On development hosts, simulation testbeds, and KVM (Kernel-based Virtual Machine) environments (such as this project's AlmaLinux 10 testbed), SVM must remain **`[Enabled]`** to provide hardware-accelerated CPU virtualization for simulation instances.
+
 4. Press `[Esc]` to return to the **`Advanced`** menu.
 
 #### Menu 2: Advanced → North Bridge Configuration (Memory & IOMMU)
-*Configures DDR5 memory mapping and DMA virtualization translation.*
+*Configures DDR5 memory mapping and DMA (Direct Memory Access) virtualization translation.*
 
 1. From the **`Advanced`** menu, press `[↓]` to select **`North Bridge Configuration`**, then press `[Enter]`.
 2. Configure the following settings:
-   - **Above 4GB MMIO Limit** → Select **`[40bit (1TB)]`** (or default matching physical memory)  
-     *Extends memory-mapped I/O decoding range above 4GB.*
-   - **IOMMU** → Select **`[Disabled]`**  
-     *Disables AMD-Vi hardware IOMMU translation at the hardware level. Eliminates IOTLB page-table translation overhead and DMA latency spikes on high-throughput NIC packet bursts.*
-   - **PPT Control** → Keep **`[Auto]`** *(Package Power Tracking)*
+
+   ##### • Above 4GB MMIO Limit (Memory-Mapped Input/Output) → Select `[40bit (1TB)]` *(Default: `[Auto]`)*
+   * **Acronym Meaning:** **MMIO** stands for **Memory-Mapped Input/Output**, which maps hardware device registers and packet buffers into the host CPU's memory address space.
+   * **What it's doing:** Configures the physical MMIO address decode window above the 4GB boundary. Selecting `[40bit (1TB)]` allocates a 40-bit physical address aperture (1 Terabyte) for PCI device BARs (Base Address Registers).
+   * **Why the default is bad (The Latency Killer):** Default BIOS configurations frequently restrict MMIO windows to 32-bit legacy address space (< 4 GB). Enterprise ultra-low latency NICs (e.g., Intel 82599, Solarflare Onload, Mellanox ConnectX) and FPGA (Field-Programmable Gate Array) accelerators require hundreds of megabytes to gigabytes of BAR aperture for packet queues, hardware timestamp registers, and direct register access. Restricting MMIO causes resource allocation failures, initialization stalls, or forces drivers into slow bounce buffering.
+   * **Why the new value is good (The Fix):** Guarantees a massive, contiguous 1TB address window where all high-speed network interfaces, FPGAs, and NVMe (Non-Volatile Memory Express) controllers can cleanly map their hardware memory apertures without resource contention or clipping.
+
+   ##### • IOMMU (Input-Output Memory Management Unit / AMD-Vi) → Select `[Disabled]` *(Default: `[Auto]` / `[Enabled]`)*
+   * **Acronym Meaning:** **IOMMU** stands for **Input-Output Memory Management Unit** (branded by AMD as AMD-Vi: AMD Virtualization for Directed I/O).
+   * **What it's doing:** Controls the hardware IOMMU, which translates device virtual memory addresses (IOVA: Input-Output Virtual Addresses) to system physical DRAM addresses for all PCIe DMA (Direct Memory Access) operations.
+   * **Why the default is bad (The Latency Killer):**
+     1. **IOTLB Miss Penalties:** Every packet DMA written by the network card must pass through the IOMMU address translation hardware. When an IOTLB (Input-Output Translation Lookaside Buffer) miss occurs, the IOMMU must walk I/O page tables in system RAM, adding **100 ns to 300+ ns of pure latency** to packet arrival.
+     2. **DMA Queue Backpressure:** Under heavy market bursts (millions of packets/sec), constant IOTLB thrashing creates memory backpressure on the NIC, causing packet drops in the NIC FIFO (First-In, First-Out) hardware queue.
+   * **Why the new value is good (The Fix):** Disabling the IOMMU in BIOS gives the trading NIC direct, unhindered 1:1 access to physical DRAM via native DMA. Incoming packet buffers and AF_XDP zero-copy UMEM (User Memory) regions are written directly into host memory with **0 ns address translation penalty**, completely eliminating IOTLB misses.
+
+   ##### • PPT Control (Package Power Tracking) → Keep `[Auto]` *(Default: `[Auto]`)*
+   * **Acronym Meaning:** **PPT** stands for **Package Power Tracking**, the maximum allowable electrical power (in Watts) that the CPU socket is permitted to draw from the motherboard VRMs (Voltage Regulator Modules).
+   * **What it's doing:** Limits the maximum continuous electrical wattage that the CPU socket is allowed to consume from the motherboard VRMs.
+   * **Why the default is bad:** When paired with aggressive Precision Boost overclocking, high default power limits generate rapid thermal spikes that cause acoustic fan oscillations and severe thermal frequency throttling.
+   * **Why the new value is good (The Fix):** When Core Performance Boost (CPB) is disabled, keeping PPT at `[Auto]` guarantees that the processor operates well within its thermal design envelope (< 55°C), ensuring stable silicon temperatures and eliminating power-budget frequency throttling.
+
 3. Press `[Esc]` to return to the **`Advanced`** menu.
 
 #### Menu 3: Advanced → PCIe/PCI/PnP Configuration (Bus States & BAR)
-*Optimizes the PCIe interconnect for low-latency network cards and NVMe storage.*
+*Optimizes the PCIe (Peripheral Component Interconnect Express) interconnect and PnP (Plug and Play) resource allocation for low-latency network cards and NVMe storage.*
 
 1. From the **`Advanced`** menu, press `[↓]` to select **`PCIe/PCI/PnP Configuration`**, then press `[Enter]`.
 2. Under **PCI Devices Common Settings**, configure:
-   - **Above 4G Decoding** → Select **`[Enabled]`**  
-     *Enables 64-bit memory space decoding for PCIe devices.*
-   - **Re-Size BAR** → Select **`[Enabled]`**  
-     *Enables PCIe Resizable Base Address Registers (Re-Size BAR), allowing the CPU direct full-aperture access to NIC and GPU memory buffers.*
-   - **SR-IOV Support** → Select **`[Enabled]`**  
-     *Enables Single Root I/O Virtualization hardware support.*
-   - **BME DMA Mitigation** → Select **`[Disabled]`**  
-     *Prevents firmware from disabling Bus Master Enable attributes after SMM lock, avoiding unexpected DMA stalls.*
-   - **ASPM Support** → Select **`[Disabled]`**  
-     *Disables Active State Power Management. Keeps PCIe Gen 4/Gen 5 lanes locked in full-power L0 active state, eliminating link wakeup delay.*
-   - **Relaxed Ordering** → Select **`[Enabled]`**  
-     *Allows PCIe packet transactions that do not depend on each other to bypass stalls, accelerating descriptor delivery.*
-   - **No Snoop** → Select **`[Enabled]`**  
-     *Allows cache-coherent DMA masters to bypass CPU cache snooping when writing to uncached packet buffers.*
-   - **NVMe Firmware Source** → Keep **`[AMI Native Support]`**
-   - **NVMe RAID Mode** → Keep **`[Disabled]`** *(AHCI / Native NVMe)*
+
+   ##### • Above 4G Decoding → Select `[Enabled]` *(Default: `[Disabled]` / `[Auto]`)*
+   * **Acronym Meaning:** Enables 64-bit memory space decoding for PCIe **BARs (Base Address Registers)** above the 4 Gigabyte physical memory boundary.
+   * **What it's doing:** Allows PCIe peripherals to allocate memory-mapped register apertures in high 64-bit address space.
+   * **Why the default is bad (The Latency Killer):** When disabled, all PCIe peripherals are forced to cram their memory windows into the 32-bit address space below 4 GB (which is heavily congested with ACPI tables, APIC [Advanced Programmable Interrupt Controller] registers, and legacy devices). Modern enterprise trading NICs and FPGAs with large BAR allocations will fail to allocate resources or suffer severe memory window fragmentation.
+   * **Why the new value is good (The Fix):** Unlocks the entire 64-bit physical address space for PCIe devices, allowing the OS to map large hardware packet buffers, circular ring descriptors, and hardware timestamping registers contiguously and cleanly.
+
+   ##### • Re-Size BAR Support (Resizable Base Address Register) → Select `[Enabled]` *(Default: `[Disabled]`)*
+   * **Acronym Meaning:** **BAR** stands for **Base Address Register**; **Re-Size BAR** stands for **Resizable Base Address Register** (part of PCIe specifications, also known commercially as AMD Smart Access Memory).
+   * **What it's doing:** Overcomes the legacy PCIe specification limit that restricted Base Address Registers to a maximum size of 256 MB. Resizable BAR enables the CPU and PCIe root complex to negotiate a BAR aperture that covers the **entire onboard physical memory capacity** of the peripheral in a single mapping.
+   * **Why the default is bad (The Latency Killer):** When disabled, the CPU can only access device memory through a narrow 256 MB window. If a smartNIC, FPGA, or GPU accelerator has gigabytes of onboard packet memory, the CPU must constantly shift 256 MB window offsets through driver calls, introducing driver remapping overhead and microsecond access bubbles.
+   * **Why the new value is good (The Fix):** The host CPU can directly address the entire memory space of the PCIe accelerator in a single linear mapping. The trading engine reads and writes hardware packet queues and execution tables directly with zero aperture-swap delay.
+
+   ##### • SR-IOV Support (Single Root I/O Virtualization) → Select `[Enabled]` *(Default: `[Disabled]`)*
+   * **Acronym Meaning:** **SR-IOV** stands for **Single Root Input/Output Virtualization**.
+   * **What it's doing:** Enables the PCIe root complex to recognize Single Root I/O Virtualization hardware attributes, allowing a physical network interface (PF: Physical Function) to expose multiple independent Virtual Functions (VFs) with dedicated DMA engines and packet queues.
+   * **Why the default is bad:** When disabled in firmware, the network card cannot partition its hardware queues or expose hardware-isolated virtual channels to user-space trading engines or kernel-bypass queues.
+   * **Why the new value is good (The Fix):** Enables hardware queue partitioning. A dedicated Virtual Function (VF) can be attached directly to an isolated trading container or thread, providing dedicated hardware packet rings without sharing queues or conflicting with host administrative traffic.
+
+   ##### • BME DMA Mitigation (Bus Master Enable DMA Mitigation) → Select `[Disabled]` *(Default: `[Enabled]`)*
+   * **Acronym Meaning:** **BME** stands for **Bus Master Enable**; **DMA** stands for **Direct Memory Access**; **SMM** stands for **System Management Mode** (the highest privilege CPU execution mode, Ring -2).
+   * **What it's doing:** A firmware security feature that revokes the Bus Master Enable (BME) attribute on PCIe devices during boot and System Management Mode (SMM) interrupts to guard against DMA injection attacks before OS driver initialization.
+   * **Why the default is bad (The Latency Killer):** If the firmware triggers an SMM interrupt (e.g. for thermal polling, chassis sensors, or legacy USB handling), BME DMA Mitigation can temporarily revoke or stall Bus Master capabilities on the PCIe bus. An unexpected DMA stall on your trading NIC causes packets to back up and drop at the wire, inducing fatal multi-millisecond trading freezes.
+   * **Why the new value is good (The Fix):** Prevents firmware from ever revoking or pausing Bus Master Enable on PCIe slots, guaranteeing uninterrupted, non-blocking DMA transmission between the trading NIC and system memory.
+
+   ##### • ASPM Support (Active State Power Management) → Select `[Disabled]` *(Default: `[Auto]` / `[Enabled]` / `[L1]`)*
+   * **Acronym Meaning:** **ASPM** stands for **Active State Power Management** (the PCIe link-level autonomous power management protocol defined in the PCI-SIG specifications).
+   * **What it's doing:** Controls autonomous link-level power management on PCIe lanes. When PCIe bus traffic pauses between the network card and the CPU, ASPM commands the physical link to transition into low-power states: **$L_0s$** (standby) and **$L_1$** (clock-gated sleep, reducing power by up to 80%).
+   * **Why the default is bad (The Latency Killer):** In trading, milliseconds of silence occur between market events. During these quiet periods, ASPM drops the PCIe link into the $L_1$ sleep state. When a packet arrives from the exchange, the PCIe transceivers **must wake up, un-gate clocks, and re-establish physical bit synchronization and link training** before any data can be transferred across the bus. This imposes a **10 µs to 50 µs link wakeup penalty ($t_{L1\_wake}$)**! The packet sits stalled in the NIC FIFO while the PCIe bus powers back on.
+   * **Why the new value is good (The Fix):** Completely deactivates PCIe power saving. The PCIe Gen 4 / Gen 5 differential signaling pairs remain permanently energized in the **$L_0$ Full-Power Active state 100% of the time**. The nanosecond a packet is decoded by the physical PHY (Physical Layer transceiver), it is transmitted across the PCIe bus to host DRAM with **0 ns link wakeup delay**.
+
+   ##### • Relaxed Ordering (PCIe Transaction Layer Packet Attribute) → Select `[Enabled]` *(Default: `[Disabled]`)*
+   * **Acronym Meaning:** Pertains to the **TLP (Transaction Layer Packet)** ordering rules in the PCIe protocol.
+   * **What it's doing:** Controls the Relaxed Ordering attribute in PCIe Transaction Layer Packets. By strict PCI transaction ordering rules, transactions heading in the same direction must be completed in strict chronological order to prevent producer-consumer hazards. Relaxed Ordering relaxes this constraint for transactions that have no data dependency on prior completions.
+   * **Why the default is bad (The Latency Killer):** Strict PCI ordering causes severe head-of-line blocking: if an earlier read transaction is delayed waiting for DRAM, all subsequent packet writes and ring buffer status descriptors are completely stalled behind it in the PCIe switch and root complex queues.
+   * **Why the new value is good (The Fix):** Allows independent packet DMA writes and descriptor updates to bypass unrelated pending reads in the PCIe root complex pipeline. This maximizes PCIe bus bandwidth and ensures fast, immediate packet delivery during market data quote bursts.
+
+   ##### • No Snoop (PCIe Cache Coherency Attribute) → Select `[Enabled]` *(Default: `[Disabled]`)*
+   * **Acronym Meaning:** Pertains to CPU **Cache Snooping** (hardware cache-coherency bus inquiries across CPU cores).
+   * **What it's doing:** Controls the No Snoop bit in PCIe Transaction Layer Packets. When a PCIe device writes data to host RAM, standard cache-coherency protocols force the CPU cache controllers to "snoop" all L1, L2, and L3 caches across all cores to invalidate or update duplicate cache lines.
+   * **Why the default is bad (The Latency Killer):** Enforcing hardware cache snooping on every single incoming market data packet generates massive, unnecessary coherency traffic across the AMD Infinity Fabric and stalls CPU cache controllers, increasing memory access latency and causing pipeline jitter.
+   * **Why the new value is good (The Fix):** In optimized HFT architectures using uncached packet memory (such as AF_XDP zero-copy UMEM [User Memory] or kernel-bypass hugepages), the NIC sets the No Snoop bit. The PCIe root complex writes packet data directly into DRAM or the targeted cache lines without broadcasting snoop requests to other cores, reducing interconnect traffic and saving valuable CPU cycles.
+
+   ##### • NVMe Firmware Source & RAID Mode (Non-Volatile Memory Express)
+   * **Acronym Meaning:** **NVMe** stands for **Non-Volatile Memory Express**; **RAID** stands for **Redundant Array of Independent Disks**; **AHCI** stands for **Advanced Host Controller Interface**.
+   * Keep **`NVMe Firmware Source`** → **`[AMI Native Support]`**
+   * Keep **`NVMe RAID Mode`** → **`[Disabled]`** *(AHCI / Native NVMe)*
+
 3. Press `[Esc]` to return to the **`Advanced`** menu.
 
 #### Menu 4: Advanced → Network Configuration (Intel 82599 Dual 10GbE)
-*Displays physical MAC addresses and PXE boot configurations for onboard dual 10GbE SFP+ controllers (`MAC:90:5A:08:3E:00:E6` and `MAC:90:5A:08:3E:00:E7`). Verify network interfaces are detected and healthy.*
+*Displays physical MAC (Media Access Control) addresses and PXE (Preboot Execution Environment) boot configurations for onboard dual 10GbE SFP+ (Enhanced Small Form-factor Pluggable) controllers (`MAC:90:5A:08:3E:00:E6` and `MAC:90:5A:08:3E:00:E7`). Verify network interfaces are detected and healthy.*
 
 #### Menu 5: Save & Exit
 1. Press `[F4]` (or press `[→]` to highlight the **`Save & Exit`** tab and select **`Save Changes and Reset`**).
