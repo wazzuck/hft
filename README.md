@@ -1226,29 +1226,145 @@ Kernel boot parameters (passed via GRUB / systemd-boot to `/proc/cmdline`) confi
 ---
 
 #### Boot Parameter 7: `preempt=full`
-* **What it is:** Sets the Linux kernel preemption model to `PREEMPT_DYNAMIC` Full Preemption. Standard enterprise Linux kernels run with `preempt=voluntary` or `preempt=none`. In those models, if a process makes a system call (entering kernel mode), the kernel cannot be interrupted until it explicitly hits a "voluntary yield" point or finishes the syscall. Full preemption changes this fundamental behavior, allowing hardware interrupts to immediately halt a kernel thread and context-switch to a higher-priority real-time task.
+* **What it is:** Sets the Linux kernel preemption model to `PREEMPT_DYNAMIC` Full Preemption (`CONFIG_PREEMPT`). Standard enterprise Linux distributions (such as RHEL, Rocky Linux, AlmaLinux, and Ubuntu Server) default to `preempt=voluntary` (or historically `preempt=none`). These models are engineered to prioritize raw computational throughput and batch workload processing rather than deterministic execution latency. Full preemption re-architects the fundamental scheduling behavior of the Linux kernel, transforming it from a semi-cooperative kernel into an aggressive, low-latency soft real-time kernel capable of interrupting arbitrary in-flight kernel code paths to schedule latency-critical user-space threads.
+
+* **The Spectrum of Linux Kernel Preemption Models:**
+  To understand what `preempt=full` does, it is essential to examine the three standard preemption models implemented in the mainline Linux kernel:
+  1. **`CONFIG_PREEMPT_NONE` (`preempt=none`) — Throughput-Oriented (Server Traditional):**
+     * *Behavior:* Kernel code is entirely non-preemptible. When a user process executes a system call (e.g., `read()`, `write()`, `epoll_wait()`, `ioctl()`), the CPU switches from Ring 3 (User Space) to Ring 0 (Kernel Space). Under `preempt=none`, that process has monopolistic ownership of the CPU core while executing kernel routines.
+     * *Preemption Points:* Preemption *only* occurs when the process explicitly relinquishes the CPU by blocking (e.g., waiting for I/O, sleeping on a mutex/wait queue via `schedule()`) or when execution finally returns all the way back out of the syscall into user space.
+     * *Consequence:* Delivers maximum raw compute throughput by eliminating context-switch churn and scheduler checks. However, if a low-priority task enters a long-running kernel operation (like walking thousands of filesystem dentries or flushing dirty memory pages), no high-priority thread can run on that core until the operation finishes. Worst-case scheduling latency frequently spikes into hundreds of microseconds or even milliseconds.
+  2. **`CONFIG_PREEMPT_VOLUNTARY` (`preempt=voluntary`) — Desktop / Mixed-Workload Default:**
+     * *Behavior:* Introduces voluntary preemption checkpoints by inserting explicit conditional scheduling calls (`cond_resched()`, `might_sleep()`) throughout long-running kernel loops and driver functions.
+     * *Preemption Points:* When an interrupt wakes a higher-priority task, the kernel marks a rescheduling flag (`TIF_NEED_RESCHED`). The running kernel task does *not* halt immediately; instead, it continues executing until it manually encounters one of these statically placed `cond_resched()` checkpoints. If the checkpoint detects `TIF_NEED_RESCHED`, the task voluntarily yields the CPU.
+     * *Consequence:* Better desktop UI responsiveness than `preempt=none`, but fundamentally coarse-grained. If a kernel subsystem or third-party driver performs a computationally intensive loop that lacks explicit `cond_resched()` annotations, the CPU remains blocked. In low-latency trading, this introduces unacceptable, non-deterministic latency spikes ranging from 50 µs to over 200 µs.
+  3. **`CONFIG_PREEMPT` (`preempt=full`) — Low-Latency / Soft Real-Time (Tuned Selection):**
+     * *Behavior:* Makes virtually all kernel code paths immediately preemptible at arbitrary instruction boundaries, except when execution is explicitly locked inside a critical section that forbids preemption (such as holding a spinlock or running with local hardware interrupts disabled).
+     * *Preemption Points:* Preemption is evaluated not merely at voluntary checkpoints, but immediately upon the completion of *any* hardware interrupt handler or whenever preemption locks are released.
+     * *Consequence:* Yields deterministic, microsecond-level dispatch latency. If a high-priority trading thread wakes up while a core is in the middle of executing a low-priority kernel routine, the kernel saves the low-priority routine's execution state and forcibly context-switches to the trading thread in **under 2 microseconds**.
+  4. **Relationship to `PREEMPT_RT` (Full Real-Time Linux):**
+     * While `preempt=full` provides soft real-time preemption within mainline Linux, the out-of-tree (and progressively upstreamed) `PREEMPT_RT` patch goes a step further by converting spinlocks into sleeping priority-inheritance mutexes (`rt_mutex`) and forcing all hardware interrupt handlers to execute as preemptible kernel threads. For high-frequency trading workloads, `preempt=full` via `PREEMPT_DYNAMIC` provides the optimal "sweet spot": it slashes tail latency to near-zero without the overhead, throughput penalties, and hardware driver incompatibilities often associated with full `PREEMPT_RT`.
+
 * **Untuned Config Value:** `preempt=voluntary` (or `preempt=none`)
 * **Tuned Config Value:** `preempt=full`
-* **What Difference It Makes:** Makes virtually all kernel code paths (except those explicitly protected by spinlocks or hardware interrupt disabling) fully preemptible. When the kernel is in `preempt=none` or `preempt=voluntary` mode, a process executing inside the kernel (e.g., performing a massive disk write) effectively "owns" the CPU. Even if a hardware interrupt fires to wake up your mission-critical, highest-priority trading thread, the scheduler *cannot* forcibly evict the low-priority process from the CPU until that process voluntarily yields control or finishes its kernel task. With `preempt=full`, the kernel is rewritten so that it can be interrupted at almost any instruction. If your high-priority trading thread needs CPU time while a housekeeping core is deep inside a low-priority kernel task, the kernel instantly pauses the low-priority task, saves its state, and yields execution to your trading thread in **under 2 microseconds** instead of waiting for a voluntary scheduling point (which can take up to 150 µs).
-* **Why It's Important for Market Data:** Slashing scheduler wake-up tail latency is paramount. If your trading application relies on any system calls (like reading a socket), a non-preemptible kernel can stall your thread while servicing a background kernel task. **Real-World Example:** Imagine your server is logging trading activity to disk. A low-priority background process calls `fsync()` to flush a massive buffer to an NVMe drive. This forces the kernel to walk through complex filesystem code. In a `preempt=none` kernel, if a UDP market data packet arrives on your NIC right at this moment, the NIC fires a hardware interrupt. The CPU sees the interrupt, but because it's locked inside the `fsync()` kernel routine, it refuses to schedule your trading thread. Your trading thread is stuck waiting in the runqueue for 50 to 150 microseconds until the `fsync()` code reaches a safe "yield" point. In a `preempt=full` kernel, the arrival of the network packet triggers an interrupt that immediately forcefully pauses the `fsync()` operation mid-execution, instantly waking up your trading thread to process the packet in under 2 microseconds. When `cyclictest` measures real-time dispatch latency, `preempt=full` consistently reduces the 99.99th percentile wake-up tail from **146 µs down to 11 µs**.
+
+* **How It Works Under the Hood (The Mechanics of `preempt_count`):**
+  Every task executing on Linux has an associated `struct task_struct` and architecture-specific `thread_info` structure containing a 32-bit counter known as **`preempt_count`**. This counter tracks whether the current execution context permits preemption:
+  * **Bitfield Hierarchy of `preempt_count`:**
+    * **`PREEMPT_MASK` (Bits 0–7):** The explicit preemption disable nesting depth. Incremented whenever kernel code enters an atomic critical section via `preempt_disable()` or by acquiring a `spinlock_t`. Decremented on `preempt_enable()` or `spin_unlock()`. Preemption is strictly forbidden whenever this count is $> 0$.
+    * **`SOFTIRQ_MASK` (Bits 8–15):** Tracks the nesting depth of Software Interrupts (bottom halves / `ksoftirqd`).
+    * **`HARDIRQ_MASK` (Bits 16–19):** Tracks whether the CPU is currently servicing a top-half hardware interrupt handler (handling an APIC/MSI-X IRQ).
+    * **`NMI_MASK` (Bit 20):** Tracks Non-Maskable Interrupts.
+  * **The Interrupt-to-Reschedule Sequence:**
+    1. **Interrupt Arrival:** An external event occurs (e.g., the network interface card receives a market data UDP packet via PCIe). The local CPU halts its current instruction stream and jumps to the Interrupt Descriptor Table (IDT) entry for that IRQ.
+    2. **IRQ Handler Execution:** The CPU increments the `HARDIRQ` bit in `preempt_count`, disabling preemption for the duration of the handler. The driver's hardware interrupt service routine reads the packet descriptor from the NIC ring buffer.
+    3. **Task Wake-Up:** The driver signals that data is ready for the user-space trading thread, calling `try_to_wake_up()`. The scheduler places the high-priority trading thread onto the CPU's runnable runqueue and sets the **`TIF_NEED_RESCHED`** (Thread Information Flag: Need Reschedule) flag on the currently interrupted task.
+    4. **The Exit Path Divergence (`ret_to_kernel`):**
+       * In **`preempt=voluntary`** or **`preempt=none`**: When the hardware interrupt completes and invokes `irq_exit()`, the kernel checks where it was interrupted. If it was interrupted while executing in *kernel space* (during a system call), it completely bypasses the scheduler and immediately resumes executing the interrupted low-priority kernel function! The `TIF_NEED_RESCHED` flag sits dormant until the syscall finishes or happens to hit a `cond_resched()`.
+       * In **`preempt=full`**: The assembly return stub (`ret_to_kernel`) checks if `preempt_count == 0`. If `preempt_count` is zero (meaning no spinlocks are held and interrupts are enabled), the kernel intercepts the return path and calls **`preempt_schedule_irq()`**. This forces an immediate call to `schedule()`, swapping the CPU register state and handing execution directly to your high-priority trading thread in **< 2 microseconds**!
+
+* **Deep Dive: What Are Spinlocks and Why Do They Inhibit Preemption?**
+  * **Definition of a Spinlock (`spinlock_t` / `qspinlock`):**
+    A spinlock is the most fundamental low-level synchronization primitive in SMP (Symmetric Multiprocessing) operating system kernels. Unlike user-space mutexes, semaphores, or futexes—which put a blocked thread to sleep by removing it from the runqueue and performing an expensive context switch—a spinlock executes a tight "busy-wait" polling loop on the CPU. The contending core continuously polls the lock variable in a tight assembly loop (using instructions like `PAUSE` on x86-64) while executing atomic read-modify-write instructions (such as `LOCK CMPXCHG`) until the lock is released by its holder on another core.
+  * **Why Spinlocks Exist in the Kernel:**
+    Hardware interrupt handlers (hardirqs) and software interrupt handlers (softirqs) execute in interrupt context, not task context. They have no backing thread or `task_struct` and therefore **cannot sleep or block**. Calling a sleeping lock (like a `mutex_lock`) inside an interrupt handler will immediately trigger a fatal kernel panic (`BUG: scheduling while atomic`). Spinlocks provide a deterministic, zero-allocation, nanosecond-scale mechanism to protect shared data structures (such as network packet queues, scheduler runqueues, or memory descriptors) across multiple CPU cores.
+  * **The Fatal Single-Core Deadlock Hazard (Why Preemption MUST Be Disabled):**
+    Why does the kernel forbid preemption while a thread holds a spinlock? Consider what would happen on a single CPU core if preemption were permitted during a spinlock critical section:
+    1. **Task A** (a low-priority worker on Core 1) acquires `spin_lock(&device_lock)`.
+    2. While Task A holds `device_lock`, a hardware interrupt arrives on Core 1.
+    3. The interrupt handler wakes **Task B** (a high-priority market data trading thread assigned to Core 1).
+    4. If the kernel were fully preemptible without restrictions, Task B would immediately preempt Task A on Core 1.
+    5. Task B begins executing and immediately attempts to acquire `spin_lock(&device_lock)`.
+    6. Because Task A already holds `device_lock`, Task B enters a busy-wait spin loop, burning 100% of Core 1's cycles waiting for the lock to become free.
+    7. **The Deadlock:** Task A, which holds the lock, can *never* run to release `device_lock` because Task B has a strictly higher priority and completely monopolizes Core 1 spinning on the lock! Core 1 is now locked in an infinite, unrecoverable deadlock, freezing that core until the entire system crashes or watchdog timers fire.
+  * **The Architectural Rule:**
+    To eliminate this catastrophic deadlock scenario, the Linux kernel enforces an absolute architectural invariant: **Acquiring a spinlock unconditionally disables local kernel preemption.**
+    * When `spin_lock()` is called, it immediately executes `preempt_disable()` (incrementing the `PREEMPT_MASK` in `preempt_count`) before attempting to acquire the lock.
+    * When `spin_unlock()` is called, it releases the lock and executes `preempt_enable()` (decrementing `preempt_count`). Only when `preempt_count` returns to zero will pending preemption requests (`TIF_NEED_RESCHED`) be evaluated.
+  * **Spinlock Flavors & Interrupt Disabling:**
+    * `spin_lock()`: Disables preemption on the local CPU, but leaves local hardware interrupts enabled. Safe only when the protected data structure is never accessed from a hardware interrupt handler on the same CPU.
+    * `spin_lock_irq()` / `spin_lock_irqsave()`: Disables **both** kernel preemption and local hardware interrupts (executing the `CLI` instruction on x86-64). This prevents an incoming hardware interrupt on the same core from nesting on top of the critical section and deadlocking on the same lock.
+  * **How This Impacts `preempt=full`:**
+    In a `preempt=full` kernel, the system is preemptible everywhere *except* inside these spinlock critical sections and interrupt-disabled blocks. Because well-designed kernel subsystems keep spinlock durations down to tens or hundreds of nanoseconds, the window of non-preemptibility shrinks from tens or hundreds of microseconds (under `preempt=voluntary`) down to sub-microsecond transients.
+
+* **What Difference It Makes:**
+  * **Eliminates Syscall CPU Monopolization:** When the kernel runs in `preempt=none` or `preempt=voluntary`, any process executing inside kernel space (e.g., executing a massive direct I/O write, traversing inode tables, or allocating large memory pages) effectively captures the CPU. Even if a hardware interrupt fires to wake up your highest-priority trading thread, the scheduler cannot forcibly evict the low-priority process until that process voluntarily reaches a yield point. With `preempt=full`, the kernel is preemptible at virtually every assembly instruction.
+  * **Crushes Tail Latency:** If your high-priority trading thread needs CPU time while a core is servicing a low-priority background task, the kernel instantly pauses the low-priority task, saves its register state, and yields execution to your trading thread in **under 2 microseconds** instead of waiting up to 150 µs for a voluntary scheduling point.
+
+* **Why It's Important for Market Data & High-Frequency Trading:**
+  In high-frequency trading (HFT), market data processing tail latency dictates profitability and risk management. If your order book feed handler or alpha strategy shares a core with any OS tasks, or if your trading thread invokes system calls (such as reading an OS network socket, polling file descriptors via `epoll_wait()`, writing audit logs, or managing shared memory segments), a non-preemptible kernel will introduce severe latency jitter.
+
+  **Real-World Example (The `fsync()` Disk Flush Stall):**
+  1. **Background Activity:** A background logging process or telemetry collector on the server calls `fsync()` to flush transaction logs to an NVMe SSD.
+  2. **Deep Kernel Traversal:** The kernel enters complex VFS (Virtual Filesystem), filesystem journal (e.g., ext4/XFS), and block-layer code paths, traversing extensive inode trees, dirty page lists, and request queues.
+  3. **The Market Event:** Right in the middle of this multi-megabyte flush, a burst of CME MDP 3.0 or NASDAQ TotalView-ITCH order book packets arrives on the 25/100 GbE network interface.
+  4. **The Hardware Interrupt:** The NIC generates a PCIe MSI-X hardware interrupt. The CPU services the interrupt handler, places the market data in memory, and wakes your high-priority trading thread waiting on the socket.
+  5. **The Divergence:**
+     * **In `preempt=voluntary` (Untuned Default):** The CPU finishes the interrupt handler, but because it was interrupted while inside the `fsync()` kernel routine, it immediately returns to finish walking the filesystem buffers. Your high-priority trading thread sits paralyzed on the runqueue for **50 to 150 microseconds** waiting for `fsync()` to reach a safe voluntary `cond_resched()` checkpoint! In those 150 microseconds, the market book has moved dozens of times, trading opportunities are missed, and stale passive orders may be adversely executed against.
+     * **In `preempt=full` (Tuned):** The CPU finishes the interrupt handler. Because the kernel is fully preemptible, the interrupt exit code (`ret_to_kernel`) checks `preempt_count`. Seeing no spinlock active, it forcefully suspends the `fsync()` operation mid-execution, preserves its execution context, and context-switches immediately to your trading thread in **under 2 microseconds**. The market packet is parsed, books are updated, and orders are routed without delay.
+
+* **Benchmark Proof (`cyclictest` Tail Latency Verification):**
+  When evaluating real-time determinism with the industry-standard `cyclictest` utility (`cyclictest -p 99 -m -N -i 1000 -l 1000000`), which measures the exact delta between an intended hardware timer wake-up and actual user-space thread dispatch:
+  * **Untuned (`preempt=voluntary`):** 99.99th percentile tail latency regularly measures **146 µs**, with maximum latency spikes exceeding **300 µs** during periods of disk logging or memory allocation.
+  * **Tuned (`preempt=full`):** 99.99th percentile tail latency drops consistently to **11 µs**, with worst-case maximum spikes contained strictly below **20 µs**.
 
 ```text
-┌─────────────────────────────────────────────────────────────────────────┐
-│ KERNEL PREEMPTION: VOLUNTARY vs FULL PREEMPTION                         │
-├─────────────────────────────────────────────────────────────────────────┤
-│ VOLUNTARY PREEMPTION (Untuned Default):                                 │
-│   Low-prio task in kernel syscall ─────────────────────────> [Yield]    │
-│                         ▲                                        ▲      │
-│                         │ Market Packet arrives!                 │      │
-│                         └── High-priority trading task waits! ───┘      │
-│                         Worst-case delay: 50 to 150 microseconds!       │
-│                                                                         │
-│ FULL PREEMPTION (Tuned: preempt=full):                                  │
-│   Low-prio task in kernel syscall ───> [FORCED PREEMPTION]              │
-│                         ▲                     │                         │
-│                         │ Market arrives!     ▼                         │
-│                         └── Trading task runs immediately! (<2 µs)      │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ KERNEL PREEMPTION: VOLUNTARY PREEMPTION vs FULL PREEMPTION DYNAMICS              │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│ VOLUNTARY PREEMPTION (Untuned Default: preempt=voluntary):                      │
+│                                                                                 │
+│ Low-Prio Task: [─── Executing complex kernel syscall (e.g. fsync / alloc) ───]  │
+│                                  ▲                                        ▲     │
+│ Market Packet Arrives! ──────────┘                                        │     │
+│   • Hard IRQ wakes trading thread                                         │     │
+│   • TIF_NEED_RESCHED flag set                                             │     │
+│   • Kernel returns to syscall anyway!                                     │     │
+│                                                                           │     │
+│ Trading Thread: [════════ STALLED WAITING IN RUNQUEUE ═══════════════════]     │
+│                 Worst-Case Jitter Tail: 50 to 150+ microseconds!          │     │
+│                                                                           │     │
+│ Syscall reaches voluntary checkpoint: ─────────────────────────> [cond_resched]│
+│                                                                           │     │
+│ Trading Thread Finally Dispatches: ───────────────────────────────────────►[RUN]│
+├─────────────────────────────────────────────────────────────────────────────────┤
+│ FULL PREEMPTION (Tuned: preempt=full):                                          │
+│                                                                                 │
+│ Low-Prio Task: [─── Executing kernel syscall ───]                               │
+│                                  ▲               │ (Forced Immediate Pause)     │
+│ Market Packet Arrives! ──────────┘               ▼                              │
+│   • Hard IRQ wakes trading thread ─────────► [preempt_schedule_irq]             │
+│   • preempt_count == 0 verified                  │                              │
+│   • Instantaneous Context Switch (< 2 µs)        ▼                              │
+│                                                                                 │
+│ Trading Thread: ───────────────────────────────► [PARSES MARKET DATA IN < 2 µs] │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ SPINLOCK ANATOMY & PREEMPTION SUPPRESSION (preempt_count)                       │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│ 32-Bit preempt_count Structure:                                                 │
+│  [31 ... 21] [    20    ] [ 19 ... 16 ] [ 15 ... 8 ] [     7 ... 0     ]        │
+│   (Unused)      NMI_MASK    HARDIRQ_MASK   SOFTIRQ_MASK   PREEMPT_MASK (Depth)  │
+│                                                                                 │
+│ Safe Execution with Spinlocks:                                                  │
+│   1. Thread A calls spin_lock(&lock)                                            │
+│      ├── Increments PREEMPT_MASK in preempt_count (preempt_count > 0)           │
+│      └── Preemption is now STRICTLY DISABLED on this core.                      │
+│                                                                                 │
+│   2. Hardware IRQ fires & wakes High-Priority Trading Thread B                  │
+│      ├── Marks TIF_NEED_RESCHED on Thread A                                     │
+│      └── On IRQ exit: checks preempt_count > 0. Preemption DEFERRED.            │
+│          (Prevents fatal single-core deadlock where Thread B spins forever!)    │
+│                                                                                 │
+│   3. Thread A finishes critical section and calls spin_unlock(&lock)            │
+│      ├── Releases lock & decrements PREEMPT_MASK (preempt_count == 0)           │
+│      └── Kernel immediately invokes preempt_schedule()!                         │
+│                                                                                 │
+│   4. Trading Thread B runs immediately. Critical section was only ~20-50 ns.    │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
