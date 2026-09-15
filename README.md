@@ -1237,52 +1237,54 @@ Every modern high-performance trading platform, operating system kernel, and pro
 
 Modern x86-64 microprocessors enforce security and isolation through **Hardware Privilege Levels**, historically known as **Protection Rings** (Rings 0 through 3). While the CPU architecture defines four rings, modern 64-bit operating systems (Linux, BSD, Windows) exclusively utilize two:
 
+![x86-64 CPU Privilege Rings and Virtual Memory Space](images/kernel_user_space_architecture.jpg)
+
 ```text
-┌─────────────────────────────────────────────────────────────────────────────────┐
+┌──────────────────────────────────────────────────────────────────────────────────┐
 │ x86-64 HARDWARE PRIVILEGE RINGS & VIRTUAL MEMORY ARCHITECTURE                    │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                 │
-│   [ Ring 3: User Space (CPL = 3) ]                                              │
-│   • Applications: Trading engines, order books, JVM, Python, Python SDK, bash   │
-│   • Instruction Restriction: Strictly forbidden from executing I/O instructions │
-│     (IN/OUT), modifying control registers (CR0-CR4), or disabling interrupts.  │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│   [ Ring 3: User Space (CPL = 3) ]                                               │
+│   • Applications: Trading engines, order books, JVM, Python, Python SDK, bash    │
+│   • Instruction Restriction: Strictly forbidden from executing I/O instructions  │
+│     (IN/OUT), modifying control registers (CR0-CR4), or disabling interrupts.    │
 │   • Address Space (Lower Canonical Half: 0x0000000000000000 - 0x00007FFFFFFFFFFF)│
-│     ┌─────────────────────────────────────────────────────────────────────┐     │
-│     │ 0x00007FFFFFFFFFFF ── Top of User Virtual Memory (128 Terabytes)    │     │
-│     │   ├── User Stack (Grows downward; local variables, stack frames)    │     │
-│     │   ├── Memory Mappings (mmap, hugetlbfs, shared libs, ld.so)         │     │
-│     │   ├── Heap (brk/sbrk; dynamic memory allocations via malloc/jemalloc│     │
-│     │   ├── BSS & Data Segments (Global uninitialized & initialized data) │     │
-│     │ 0x0000000000400000 ── Executable Text Segment (Application ELF Code)│     │
-│     │ 0x0000000000000000 ── Null Pointer Trap Page (Enforces SIGSEGV)     │     │
-│     └─────────────────────────────────────────────────────────────────────┘     │
-│                                      │                                          │
-│        ═════════════════════════════════════════════════════════════            │
-│        HARDWARE ENFORCED HOLE (Non-Canonical Address Space: ~16.7 Million TB)   │
-│        CPU triggers General Protection Fault (#GP) on any memory access here    │
-│        ═════════════════════════════════════════════════════════════            │
-│                                      │                                          │
-│   [ Ring 0: Kernel Space / Supervisor Mode (CPL = 0) ]                          │
-│   • Entity: The monolithic Linux Kernel (`vmlinux`) & loaded kernel modules    │
-│   • Unrestricted Privileges: Complete execution authority over all silicon;     │
-│     can execute privileged instructions (CLI, STI, LIDT, WRSMR, MOV CR3).       │
+│     ┌─────────────────────────────────────────────────────────────────────┐      │
+│     │ 0x00007FFFFFFFFFFF ── Top of User Virtual Memory (128 Terabytes)    │      │
+│     │   ├── User Stack (Grows downward; local variables, stack frames)    │      │
+│     │   ├── Memory Mappings (mmap, hugetlbfs, shared libs, ld.so)         │      │
+│     │   ├── Heap (brk/sbrk; dynamic memory allocations via malloc/jemalloc│      │
+│     │   ├── BSS & Data Segments (Global uninitialized & initialized data) │      │
+│     │ 0x0000000000400000 ── Executable Text Segment (Application ELF Code)│      │
+│     │ 0x0000000000000000 ── Null Pointer Trap Page (Enforces SIGSEGV)     │      │
+│     └─────────────────────────────────────────────────────────────────────┘      │ 
+│                                      │                                           │ 
+│        ═════════════════════════════════════════════════════════════             │
+│        HARDWARE ENFORCED HOLE (Non-Canonical Address Space: ~16.7 Million TB)    │
+│        CPU triggers General Protection Fault (#GP) on any memory access here     │
+│        ═════════════════════════════════════════════════════════════             │
+│                                      │                                           │
+│   [ Ring 0: Kernel Space / Supervisor Mode (CPL = 0) ]                           │
+│   • Entity: The monolithic Linux Kernel (`vmlinux`) & loaded kernel modules      │
+│   • Unrestricted Privileges: Complete execution authority over all silicon;      │
+│     can execute privileged instructions (CLI, STI, LIDT, WRSMR, MOV CR3).        │
 │   • Address Space (Upper Canonical Half: 0xFFFF800000000000 - 0xFFFFFFFFFFFFFFFF)│
-│     ┌─────────────────────────────────────────────────────────────────────┐     │
-│     │ 0xFFFFFFFFFFFFFFFF ── Top of Kernel Virtual Memory (128 Terabytes)  │     │
-│     │   ├── Architecture-Specific Fixmaps, APIC MMIO & Hardware Registers │     │
-│     │   ├── Module Mapping Space & Kernel Text (Compiled C routines)      │     │
-│     │   ├── vmalloc Area (Non-contiguous memory for loadable drivers)     │     │
-│     │   ├── Direct Physical Memory Map (page_offset_base: All physical    │     │
-│     │   │   DRAM mapped 1:1 for blazing fast kernel access)               │     │
-│     │ 0xFFFF800000000000 ── Base of Kernel Virtual Memory                 │     │
-│     └─────────────────────────────────────────────────────────────────────┘     │
-│                                                                                 │
-│   Hardware Enforcement Mechanisms:                                              │
-│   1. U/S (User/Supervisor) Page Table Bit: If set to 0, Ring 3 access = #PF     │
-│   2. SMEP (Supervisor Mode Execution Prevention): Kernel cannot execute Ring 3  │
-│   3. SMAP (Supervisor Mode Access Prevention): Kernel cannot read/write Ring 3  │
-│      memory without explicit CPU override flags (STAC / CLAC instructions)      │
-└─────────────────────────────────────────────────────────────────────────────────┘
+│     ┌─────────────────────────────────────────────────────────────────────┐      │
+│     │ 0xFFFFFFFFFFFFFFFF ── Top of Kernel Virtual Memory (128 Terabytes)  │      │
+│     │   ├── Architecture-Specific Fixmaps, APIC MMIO & Hardware Registers │      │
+│     │   ├── Module Mapping Space & Kernel Text (Compiled C routines)      │      │
+│     │   ├── vmalloc Area (Non-contiguous memory for loadable drivers)     │      │
+│     │   ├── Direct Physical Memory Map (page_offset_base: All physical    │      │
+│     │   │   DRAM mapped 1:1 for blazing fast kernel access)               │      │
+│     │ 0xFFFF800000000000 ── Base of Kernel Virtual Memory                 │      │
+│     └─────────────────────────────────────────────────────────────────────┘      │
+│                                                                                  │
+│   Hardware Enforcement Mechanisms:                                               │
+│   1. U/S (User/Supervisor) Page Table Bit: If set to 0, Ring 3 access = #PF      │
+│   2. SMEP (Supervisor Mode Execution Prevention): Kernel cannot execute Ring 3   │
+│   3. SMAP (Supervisor Mode Access Prevention): Kernel cannot read/write Ring 3   │
+│      memory without explicit CPU override flags (STAC / CLAC instructions)       │
+└──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ##### Key Technical Distinctions:
@@ -1308,7 +1310,9 @@ User space applications are completely isolated from hardware. An application ca
 │ 2. HARDWARE INTERRUPTS (Asynchronous External Events):                          │
 │    • Generated by physical peripheral hardware (NIC PCIe packet arrival, timer) │
 │    • The CPU stops executing user instructions immediately, vectors through the │
-│      Interrupt Descriptor Table (IDT), and executes the driver's ISR in Ring 0. │
+│      Interrupt Descriptor Table (IDT), and executes the driver's ISR            │
+│      (Interrupt Service Routine — the kernel handler that acknowledges the      │
+│      hardware interrupt and schedules deferred packet processing) in Ring 0.    │
 │                                                                                 │
 │ 3. PROCESSOR EXCEPTIONS & TRAPS (Synchronous Fault Conditions):                 │
 │    • Generated by the CPU core when an instruction encounters an error or state │
@@ -1330,59 +1334,64 @@ User space applications are completely isolated from hardware. An application ca
 When an application invokes a standard C library function such as `read(fd, buf, count)` or `sendto(sockfd, ...)`, the operating system does not execute a simple function call. It initiates an intricate hardware privilege escalation protocol:
 
 ```text
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│ THE LIFECYCLE OF A SYSTEM CALL (x86-64 `SYSCALL` -> `SYSRET` PROTOCOL)          │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                 │
-│  USER SPACE (Ring 3: CPL = 3)                                                   │
-│  ┌───────────────────────────────────────────────────────────────────────────┐  │
-│  │ 1. Application calls libc wrapper: read(fd, buf, count)                   │  │
-│  │ 2. glibc populates CPU registers according to System V AMD64 ABI:          │  │
-│  │    • %rax = 0             (The unique syscall number: __NR_read)          │  │
-│  │    • %rdi = fd            (First parameter: file descriptor)              │  │
-│  │    • %rsi = buf           (Second parameter: pointer to user memory)      │  │
-│  │    • %rdx = count         (Third parameter: byte count)                   │  │
-│  │ 3. Executes machine instruction: SYSCALL (Opcode: 0x0F 0x05) ───────────┐  │  │
-│  └────────────────────────────────────────────────────────────────────────│───┘  │
-│                                                                           │     │
-│  HARDWARE TRANSITION (Microcode Execution Inside CPU Silicon)             ▼     │
-│  ┌───────────────────────────────────────────────────────────────────────────┐  │
-│  │ • Saves return instruction pointer (%rip) into %rcx register              │  │
-│  │ • Saves user CPU flags (%rflags) into %r11 register                       │  │
-│  │ • Masks %rflags using MSR_FMASK (disabling hardware interrupts if masked) │  │
-│  │ • Sets Code Segment (%cs) to Ring 0 (CPL = 0)                             │  │
-│  │ • Loads entry point address from MSR_LSTAR into %rip                      │  │
-│  │ • CPU jumps directly to kernel handler: entry_SYSCALL_64                  │  │
-│  └────────────────────────────────────────────────────────────────────────│───┘  │
-│                                                                           │     │
-│  KERNEL SPACE (Ring 0: CPL = 0)                                           ▼     │
-│  ┌───────────────────────────────────────────────────────────────────────────┐  │
-│  │ 4. entry_SYSCALL_64 executes low-level assembly bridge:                   │  │
-│  │    • SWAPGS: Atomically swaps user GS base with kernel per-CPU data struct│  │
-│  │    • Stack Pivot: Switches %rsp from User Stack to Kernel Stack (TSS RSP0)│  │
-│  │    • Push `struct pt_regs`: Saves remaining user registers to stack       │  │
-│  │ 5. Validation: Verifies %rax < NR_syscalls                                │  │
-│  │ 6. Dispatch: Indexes the kernel System Call Table:                        │  │
-│  │    `call *sys_call_table(,%rax,8)` ──> Invokes `ksys_read()`              │  │
-│  │ 7. Kernel Subsystem Execution:                                            │  │
-│  │    • Virtual Filesystem (VFS) resolves fd to `struct file`                │  │
-│  │    • Filesystem/driver routine fetches requested data into kernel page    │  │
-│  │    • copy_to_user(): Copies payload across boundary into user buffer      │  │
-│  │      (Enforces SMAP safety checks to prevent memory corruptions)          │  │
-│  │ 8. Return Preparation:                                                    │  │
-│  │    • Places return value (bytes read or -errno) into %rax                 │  │
-│  │    • Restores user registers from `struct pt_regs` stack frame            │  │
-│  │    • SWAPGS: Restores user GS register base                               │  │
-│  │ 9. Executes machine instruction: SYSRETQ (Opcode: 0x48 0x0F 0x07) ──────┐  │  │
-│  └────────────────────────────────────────────────────────────────────────│───┘  │
-│                                                                           │     │
-│  HARDWARE TRANSITION (Return to User Mode)                                ▼     │
-│  ┌───────────────────────────────────────────────────────────────────────────┐  │
-│  │ • Restores %rip from %rcx and %rflags from %r11                           │  │
-│  │ • Sets Code Segment (%cs) back to Ring 3 (CPL = 3)                        │  │
-│  │ • Application resumes execution at the next user assembly instruction ◄───┘  │  │
-│  └───────────────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ THE LIFECYCLE OF A SYSTEM CALL: ARCHITECTURAL PROTOCOL vs REAL-WORLD FILE READ                                │
+├──────────────────────────────────────────────────────┬────────────────────────────────────────────────────────┤
+│ LOW-LEVEL ARCHITECTURAL PROTOCOL (x86-64 / KERNEL)   │ REAL-WORLD EVENT: read(fd, buf, 4096) on 'trade.log'   │
+├──────────────────────────────────────────────────────┼────────────────────────────────────────────────────────┤
+│ PHASE 1: USER SPACE (Ring 3: CPL = 3)                │ PHASE 1: APPLICATION INVOKES FILE READ                 │
+│ ──────────────────────────────────────────────────── │ ────────────────────────────────────────────────────── │
+│ 1. App invokes libc wrapper: read(fd, buf, count)    │ 1. App thread calls read(fd, buffer, 4096)             │
+│ 2. glibc populates registers per AMD64 ABI:          │ 2. glibc loads trading data parameters:                │
+│    • %rax = 0    (Syscall number: __NR_read)         │    • %rax = 0    (__NR_read for Linux x86-64)          │
+│    • %rdi = fd   (Arg 1: file descriptor)            │    • %rdi = 3    (Open file descriptor for trade.log)  │
+│    • %rsi = buf  (Arg 2: user virtual memory ptr)    │    • %rsi = 0x7ffd_9a12 (Pointer to 4KB stack buffer)  │
+│    • %rdx = cnt  (Arg 3: count of bytes to read)     │    • %rdx = 4096 (Number of bytes requested)           │
+│ 3. Executes CPU instruction: SYSCALL (0x0F 0x05)     │ 3. User thread triggers hardware trap into kernel      │
+├──────────────────────────────────────────────────────┼────────────────────────────────────────────────────────┤
+│ PHASE 2: HARDWARE TRANSITION (Silicon Microcode)     │ PHASE 2: CPU PRIVILEGE ESCALATION (~15-25 ns)          │
+│ ──────────────────────────────────────────────────── │ ────────────────────────────────────────────────────── │
+│ • CPU saves return pointer: %rip ──> %rcx            │ • CPU saves return address of next user instruction    │
+│ • CPU saves user condition flags: %rflags ──> %r11   │ • Preserves app CPU flags for transparent resume       │
+│ • Masks %rflags via MSR_FMASK (clears IF bit to      │ • Silicon disables hardware IRQs on this CPU core to   │
+│   disable nested hardware interrupts in transit)     │   guarantee uninterrupted entry into kernel space      │
+│ • Sets Code Segment (%cs) selector to Ring 0 (CPL=0) │ • Elevates privilege from User Mode (Ring 3) to Ring 0 │
+│ • Loads entry address from MSR_LSTAR into %rip       │ • Points instruction pointer to kernel entry routine   │
+│ • CPU jumps directly to kernel: entry_SYSCALL_64     │ • CPU begins executing Linux kernel code in Ring 0     │
+├──────────────────────────────────────────────────────┼────────────────────────────────────────────────────────┤
+│ PHASE 3: KERNEL SPACE (Ring 0: CPL = 0)              │ PHASE 3: KERNEL VFS & PAGE CACHE RESOLUTION            │
+│ ──────────────────────────────────────────────────── │ ────────────────────────────────────────────────────── │
+│ 4. entry_SYSCALL_64 executes assembly bridge:        │ 4. Kernel switches to per-thread kernel execution:     │
+│    • SWAPGS: Swaps user GS base with kernel per-CPU  │    • Locates current task struct and CPU local data    │
+│    • Stack Pivot: %rsp ──> Kernel Stack (TSS RSP0)   │    • Switches user stack pointer to kernel stack page  │
+│    • Push pt_regs: Saves remaining user registers    │    • Saves caller general-purpose registers to stack   │
+│ 5. Validation: Verifies %rax < NR_syscalls           │ 5. Verifies syscall ID 0 is valid and within bounds    │
+│ 6. Dispatch: Indexes System Call Table:              │ 6. Indexes sys_call_table[0] ──> calls ksys_read()     │
+│    `call *sys_call_table(,%rax,8)` ──> ksys_read()   │    Dispatches directly to virtual filesystem layer     │
+│ 7. Subsystem Execution (VFS / Ext4 / Page Cache):    │ 7. Kernel locates file & retrieves 4096 bytes:         │
+│    • Resolves fd ──> struct file in process table    │    • fd=3 resolves to /var/log/trade.log file inode    │
+│    • Validates read permissions and current offset   │    • Checks access rights; reads file position offset  │
+│    • Calls filesystem file_operations->read_iter()   │    • Ext4 checks Page Cache in RAM:                    │
+│    • If cached: reads immediately from Page Cache    │      - Cache Hit: 0 disk I/O; fast DRAM copy (~200ns)  │
+│    • If uncached: issues NVMe DMA read request       │      - Cache Miss: NVMe DMA fetch to page (~10-20us)   │
+│    • copy_to_user(): Copies payload into %rsi        │    • Safely copies 4096 bytes across boundary into     │
+│      (Enforces SMAP safety checks against faults)    │      user buffer (0x7ffd_9a12); advances file offset   │
+│ 8. Return Preparation:                               │ 8. Kernel finishes read operation:                     │
+│    • Writes return value (bytes or -errno) to %rax   │    • Sets %rax = 4096 (total bytes successfully read)  │
+│    • Restores user registers from pt_regs frame      │    • Pops saved user registers off kernel stack        │
+│    • SWAPGS: Restores user GS register base          │    • Restores user GS base register via SWAPGS         │
+│ 9. Executes machine instruction: SYSRETQ             │ 9. Prepares CPU hardware to return to application      │
+├──────────────────────────────────────────────────────┼────────────────────────────────────────────────────────┤
+│ PHASE 4: HARDWARE RETURN (Return to User Mode)       │ PHASE 4: USER APPLICATION RESUMES IN RING 3            │
+│ ──────────────────────────────────────────────────── │ ────────────────────────────────────────────────────── │
+│ • SYSRETQ (Opcode: 0x48 0x0F 0x07):                  │ • Hardware restores user state in a single step:       │
+│   - Restores %rip from %rcx and %rflags from %r11    │   - Restores instruction pointer to libc return stub   │
+│   - Sets Code Segment (%cs) back to Ring 3 (CPL=3)   │   - Drops CPU privilege level back to Ring 3 (User)    │
+│ • CPU resumes execution at next user instruction     │ • Application thread wakes up immediately:             │
+│ • libc wrapper reads %rax (return value):            │ • read(fd, buffer, 4096) returns 4096 to caller        │
+│   - If %rax >= 0: returns bytes count to caller      │ • App processes order book events from buffer          │
+│   - If %rax < 0: sets errno = -%rax, returns -1      │ • Total round-trip time: ~50-250 ns (Page Cache hit)   │
+└───────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -1398,16 +1407,18 @@ In general-purpose computing, system calls take between **50 to 200 nanoseconds*
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│ THE THREE I/O PARADIGMS: STANDARD SYSCALL vs vDSO vs KERNEL-BYPASS               │
+│ THE THREE I/O PARADIGMS: STANDARD SYSCALL vs vDSO vs KERNEL-BYPASS              │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
-│ 1. Standard BSD System Call (e.g. read(), recvfrom(), epoll_wait()):           │
+│ 1. Standard BSD System Call (e.g. read(), recvfrom(), epoll_wait()):            │
 │    User App ──[Ring 3->0 Privilege Switch]──> VFS ──> TCP/IP Stack ──> NIC      │
 │    Latency: 1,500 – 5,000 ns (Syscall overhead, sk_buff allocation, memcopy)    │
 │                                                                                 │
-│ 2. vDSO Virtual Syscall (e.g. clock_gettime(CLOCK_MONOTONIC_RAW)):              │
-│    User App ──[Direct Read from Kernel-Mapped Read-Only Memory Page]──> Return  │
-│    Latency: 12 – 22 ns (ZERO privilege switches, 100% user-space execution!)    │
+│ 2. vDSO Virtual Syscall (virtual Dynamic Shared Object):                        │
+│    • What it is: A kernel-provided ELF shared library mapped into user memory   │
+│      allowing read-only queries (like clocks) to run 100% in Ring 3 (NO SYSCALL)│
+│    • Flow: App ──[Direct Read from Kernel-Mapped Read-Only Page]──> Return      │
+│    • Latency: 12 – 22 ns (e.g. clock_gettime(CLOCK_MONOTONIC_RAW) via CPU TSC)  │
 │                                                                                 │
 │ 3. Kernel-Bypass Direct Hardware DMA (AF_XDP Zero-Copy, Solarflare EFVI, DPDK): │
 │    User App ──[Direct Read/Write to Hardware UMEM Memory Pool]────────> NIC DMA │
@@ -1415,6 +1426,23 @@ In general-purpose computing, system calls take between **50 to 200 nanoseconds*
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+##### Deep Dive: Under the Hood of vDSO (virtual Dynamic Shared Object)
+
+To mitigate the cost of system calls for frequent read-only operations, modern Linux provides the **vDSO** mechanism:
+
+1. **Kernel-Provided User-Space Library:**
+   - At process initialization, the Linux kernel automatically maps a small virtual ELF shared library (`[vdso]` in `/proc/<pid>/maps`) into the virtual address space of every user application via the ELF auxiliary vector (`AT_SYSINFO_EHDR`).
+   - It simultaneously maps a companion read-only memory page called `[vvar]`, where the kernel continuously maintains live timing state, base timestamps, cycle conversion multipliers, and NTP frequency adjustments directly in physical memory.
+
+2. **How It Works (Bypassing the `SYSCALL` Hardware Instruction):**
+   - For designated safe, read-only queries—most notably `clock_gettime()`, `gettimeofday()`, `time()`, and `getcpu()`—the C runtime (`glibc`) delegates calls directly to the symbols exported by `[vdso]`.
+   - Instead of emitting the x86-64 `SYSCALL` opcode (which triggers an expensive Ring 3 $\rightarrow$ Ring 0 mode switch, stack pivot, and pipeline flush), the vDSO code executes **100% in user space (Ring 3)**.
+   - It reads the CPU hardware cycle counter directly via the `RDTSC` / `RDTSCP` assembly instruction, performs fixed-point arithmetic using calibration constants stored in the `[vvar]` page, and returns immediately.
+
+3. **Why It Matters for Low-Latency & HFT:**
+   - **Zero Privilege Switch Overhead:** Slashes timestamp acquisition latency from **50–200 ns** down to **12–22 ns**.
+   - **Eliminates Jitter & Cache Thrashing:** Bypasses kernel entry assembly entirely, preventing pipeline stalls, branch predictor pollution, TLB invalidation, and kernel preemption hazards during high-frequency profiling and tick-to-trade latency measurement.
 
 ---
 
@@ -1579,7 +1607,7 @@ Below is an exhaustive catalog of the most critical Linux system calls, categori
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│ KERNEL PREEMPTION: VOLUNTARY PREEMPTION vs FULL PREEMPTION DYNAMICS              │
+│ KERNEL PREEMPTION: VOLUNTARY PREEMPTION vs FULL PREEMPTION DYNAMICS             │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │ VOLUNTARY PREEMPTION (Untuned Default: preempt=voluntary):                      │
 │                                                                                 │
@@ -1590,10 +1618,10 @@ Below is an exhaustive catalog of the most critical Linux system calls, categori
 │   • TIF_NEED_RESCHED flag set                                             │     │
 │   • Kernel returns to syscall anyway!                                     │     │
 │                                                                           │     │
-│ Trading Thread: [════════ STALLED WAITING IN RUNQUEUE ═══════════════════]     │
+│ Trading Thread: [════════ STALLED WAITING IN RUNQUEUE ═══════════════════]      │
 │                 Worst-Case Jitter Tail: 50 to 150+ microseconds!          │     │
 │                                                                           │     │
-│ Syscall reaches voluntary checkpoint: ─────────────────────────> [cond_resched]│
+│ Syscall reaches voluntary checkpoint: ─────────────────────────> [cond_resched] │
 │                                                                           │     │
 │ Trading Thread Finally Dispatches: ───────────────────────────────────────►[RUN]│
 ├─────────────────────────────────────────────────────────────────────────────────┤
